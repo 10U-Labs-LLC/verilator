@@ -15,12 +15,12 @@ test.scenarios('vlt')
 # --inline-cfuncs 1: only inline functions with <= 1 node (essentially nothing)
 # --inline-cfuncs-product 1: product threshold also very low
 test.compile(verilator_flags2=[
-    "--stats", "--exe", "--main", "--inline-cfuncs", "1", "--inline-cfuncs-product", "1"
+    "--stats", "--binary", "--inline-cfuncs", "1", "--inline-cfuncs-product", "1"
 ])
 
 # With such low thresholds, very few or no functions should be inlined
 # This exercises the "return false" path in isInlineable()
-test.file_grep(test.stats, r'Optimizations, Inlined CFuncs\s+(\d+)')
+test.file_grep(test.stats, r'Optimizations, Inlined CFuncs\s+(\d+)', 0)
 
 test.execute()
 
