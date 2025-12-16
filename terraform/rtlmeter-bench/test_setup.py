@@ -150,7 +150,7 @@ class TestAWSPreProvisioning:
         main_tf = os.path.join(TERRAFORM_DIR, "main.tf")
         assert os.path.isfile(main_tf), f"main.tf not found at {main_tf}"
 
-        with open(main_tf) as f:
+        with open(main_tf, encoding="utf-8") as f:
             content = f.read()
 
         # Must have instance_market_options block
@@ -169,9 +169,63 @@ class TestAWSPreProvisioning:
         assert re.search(r'spot_instance_type\s*=\s*["\']one-time["\']', content), \
             "spot_instance_type should be \"one-time\" to prevent auto-relaunch"
 
-        print("\n✓ Terraform config verified: EC2 will be spot instance only")
-        print("  - market_type = \"spot\"")
-        print("  - spot_instance_type = \"one-time\"")
+        print("\n  Terraform config verified: EC2 will be spot instance only")
+        print("    - market_type = \"spot\"")
+        print("    - spot_instance_type = \"one-time\"")
+
+    def test_terraform_has_s3_backup(self):
+        """Verify Terraform config includes S3 bucket for results backup."""
+        main_tf = os.path.join(TERRAFORM_DIR, "main.tf")
+        assert os.path.isfile(main_tf), f"main.tf not found at {main_tf}"
+
+        with open(main_tf, encoding="utf-8") as f:
+            content = f.read()
+
+        # Must have S3 bucket resource
+        assert "aws_s3_bucket" in content, \
+            "main.tf missing S3 bucket for results backup"
+
+        # Must have lifecycle configuration (auto-delete old results)
+        assert "aws_s3_bucket_lifecycle_configuration" in content, \
+            "main.tf missing S3 lifecycle config (results should auto-expire)"
+
+        # Must have force_destroy (so terraform destroy works)
+        assert "force_destroy = true" in content, \
+            "S3 bucket must have force_destroy = true"
+
+        print("\n  Terraform config verified: S3 backup configured")
+        print("    - S3 bucket with lifecycle policy")
+        print("    - force_destroy enabled")
+
+    def test_terraform_has_s3_iam_permissions(self):
+        """Verify EC2 has IAM permissions to write to S3."""
+        main_tf = os.path.join(TERRAFORM_DIR, "main.tf")
+        assert os.path.isfile(main_tf), f"main.tf not found at {main_tf}"
+
+        with open(main_tf, encoding="utf-8") as f:
+            content = f.read()
+
+        # Must have IAM policy for S3 write
+        assert "s3:PutObject" in content, \
+            "main.tf missing s3:PutObject permission for EC2"
+
+        assert "aws_iam_role_policy" in content, \
+            "main.tf missing IAM role policy for S3 access"
+
+        print("\n  Terraform config verified: EC2 has S3 write permissions")
+
+    def test_terraform_outputs_s3_bucket(self):
+        """Verify Terraform outputs the S3 bucket name."""
+        outputs_tf = os.path.join(TERRAFORM_DIR, "outputs.tf")
+        assert os.path.isfile(outputs_tf), f"outputs.tf not found at {outputs_tf}"
+
+        with open(outputs_tf, encoding="utf-8") as f:
+            content = f.read()
+
+        assert "s3_bucket" in content, \
+            "outputs.tf missing s3_bucket output"
+
+        print("\n  Terraform config verified: S3 bucket name in outputs")
 
 
 class TestDirectoryStructure:
