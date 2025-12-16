@@ -11,7 +11,7 @@ import pytest
 
 BENCHMARK_DIR = "/home/ubuntu/benchmark"
 BASELINE_DIR = f"{BENCHMARK_DIR}/verilator-install-baseline"
-PR_DIR = f"{BENCHMARK_DIR}/verilator-install-pr"
+OPTIMIZED_DIR = f"{BENCHMARK_DIR}/verilator-install-optimized"
 RTLMETER_DIR = f"{BENCHMARK_DIR}/rtlmeter"
 VERILATOR_SRC = f"{BENCHMARK_DIR}/verilator"
 
@@ -25,8 +25,8 @@ class TestDirectoryStructure:
     def test_baseline_install_exists(self):
         assert os.path.isdir(BASELINE_DIR), f"{BASELINE_DIR} does not exist"
 
-    def test_pr_install_exists(self):
-        assert os.path.isdir(PR_DIR), f"{PR_DIR} does not exist"
+    def test_optimized_install_exists(self):
+        assert os.path.isdir(OPTIMIZED_DIR), f"{OPTIMIZED_DIR} does not exist"
 
     def test_rtlmeter_exists(self):
         assert os.path.isdir(RTLMETER_DIR), f"{RTLMETER_DIR} does not exist"
@@ -43,8 +43,8 @@ class TestVerilatorBinaries:
         assert os.path.isfile(binary), f"{binary} does not exist"
         assert os.access(binary, os.X_OK), f"{binary} is not executable"
 
-    def test_pr_verilator_exists(self):
-        binary = f"{PR_DIR}/bin/verilator"
+    def test_optimized_verilator_exists(self):
+        binary = f"{OPTIMIZED_DIR}/bin/verilator"
         assert os.path.isfile(binary), f"{binary} does not exist"
         assert os.access(binary, os.X_OK), f"{binary} is not executable"
 
@@ -56,17 +56,17 @@ class TestVerilatorBinaries:
         assert result.returncode == 0, f"Baseline verilator failed: {result.stderr}"
         assert "Verilator" in result.stdout
 
-    def test_pr_verilator_runs(self):
+    def test_optimized_verilator_runs(self):
         result = subprocess.run(
-            [f"{PR_DIR}/bin/verilator", "--version"],
+            [f"{OPTIMIZED_DIR}/bin/verilator", "--version"],
             capture_output=True, text=True
         )
-        assert result.returncode == 0, f"PR verilator failed: {result.stderr}"
+        assert result.returncode == 0, f"Optimized verilator failed: {result.stderr}"
         assert "Verilator" in result.stdout
 
 
 class TestVerilatorVersions:
-    """Verify Verilator versions are different (baseline vs PR)."""
+    """Verify Verilator versions are different (baseline vs optimized)."""
 
     def get_version(self, verilator_path):
         result = subprocess.run(
@@ -77,31 +77,26 @@ class TestVerilatorVersions:
 
     def test_versions_are_different(self):
         baseline_ver = self.get_version(f"{BASELINE_DIR}/bin/verilator")
-        pr_ver = self.get_version(f"{PR_DIR}/bin/verilator")
-        assert baseline_ver != pr_ver, \
-            f"Baseline and PR versions should differ:\n  Baseline: {baseline_ver}\n  PR: {pr_ver}"
+        optimized_ver = self.get_version(f"{OPTIMIZED_DIR}/bin/verilator")
+        assert baseline_ver != optimized_ver, \
+            f"Baseline and optimized versions should differ:\n  Baseline: {baseline_ver}\n  Optimized: {optimized_ver}"
 
     def test_baseline_is_upstream(self):
         """Baseline should be from upstream (no fork commits)."""
         baseline_ver = self.get_version(f"{BASELINE_DIR}/bin/verilator")
-        # PR version has commits like "Add Jose Drowne to CONTRIBUTORS"
+        # Optimized version has commits like "Add Jose Drowne to CONTRIBUTORS"
         assert "db5876f" not in baseline_ver, \
-            f"Baseline appears to be PR version: {baseline_ver}"
+            f"Baseline appears to be optimized version: {baseline_ver}"
 
 
-class TestPRCodeChanges:
-    """Verify PR has the V3ThreadPool optimization changes."""
+class TestOptimizedCodeChanges:
+    """Verify optimized build has the V3ThreadPool optimization changes."""
 
-    def test_pr_has_lambda_wait(self):
-        """PR should use lambda form of condition_variable wait."""
-        result = subprocess.run(
-            ["grep", "-c", "m_completionCV.wait(m_mutex, \\[",
-             f"{VERILATOR_SRC}/src/V3ThreadPool.cpp"],
-            capture_output=True, text=True
-        )
-        # Check if the PR branch has the lambda form
+    def test_optimized_has_lambda_wait(self):
+        """Optimized should use lambda form of condition_variable wait."""
+        # Check if the optimized branch has the lambda form
         subprocess.run(
-            ["git", "-C", VERILATOR_SRC, "checkout", "fork/optimize-threadpool-wait-cv"],
+            ["git", "-C", VERILATOR_SRC, "checkout", "origin/optimize-threadpool-wait-cv"],
             capture_output=True
         )
         result = subprocess.run(
@@ -110,22 +105,22 @@ class TestPRCodeChanges:
             capture_output=True, text=True
         )
         assert "lambda" in result.stdout or "[&]" in result.stdout or result.returncode == 0, \
-            "PR should have lambda form of wait()"
+            "Optimized should have lambda form of wait()"
 
-    def test_pr_has_memory_order_release(self):
-        """PR should use memory_order_release (not acq_rel)."""
+    def test_optimized_has_memory_order_release(self):
+        """Optimized should use memory_order_release (not acq_rel)."""
         subprocess.run(
-            ["git", "-C", VERILATOR_SRC, "checkout", "fork/optimize-threadpool-wait-cv"],
+            ["git", "-C", VERILATOR_SRC, "checkout", "origin/optimize-threadpool-wait-cv"],
             capture_output=True
         )
         with open(f"{VERILATOR_SRC}/src/V3ThreadPool.cpp") as f:
             content = f.read()
         assert "memory_order_release" in content, \
-            "PR should have memory_order_release in fetch_sub"
+            "Optimized should have memory_order_release in fetch_sub"
         # The acq_rel should NOT be present in the notification code
         assert content.count("memory_order_acq_rel") == 0 or \
                "fetch_sub(1, std::memory_order_release)" in content, \
-            "PR should use memory_order_release, not acq_rel"
+            "Optimized should use memory_order_release, not acq_rel"
 
 
 class TestRTLMeter:
@@ -190,7 +185,7 @@ class TestParallelCompilation:
 
     def test_verilator_accepts_j_flag(self):
         """Both verilators should accept -j flag."""
-        for name, path in [("baseline", BASELINE_DIR), ("pr", PR_DIR)]:
+        for name, path in [("baseline", BASELINE_DIR), ("optimized", OPTIMIZED_DIR)]:
             result = subprocess.run(
                 [f"{path}/bin/verilator", "--help"],
                 capture_output=True, text=True
@@ -219,29 +214,29 @@ class TestQuickVerilation:
         )
         assert result.returncode == 0, f"Baseline verilate failed: {result.stderr}"
 
-    def test_pr_can_verilate_simple(self, temp_dir):
-        """PR can verilate a simple module."""
+    def test_optimized_can_verilate_simple(self, temp_dir):
+        """Optimized can verilate a simple module."""
         sv_file = temp_dir / "test.sv"
         sv_file.write_text("module test(input clk, output reg q); always @(posedge clk) q <= ~q; endmodule")
 
         result = subprocess.run(
-            [f"{PR_DIR}/bin/verilator", "--cc", str(sv_file)],
+            [f"{OPTIMIZED_DIR}/bin/verilator", "--cc", str(sv_file)],
             capture_output=True, text=True,
             cwd=temp_dir
         )
-        assert result.returncode == 0, f"PR verilate failed: {result.stderr}"
+        assert result.returncode == 0, f"Optimized verilate failed: {result.stderr}"
 
-    def test_pr_can_verilate_with_j_flag(self, temp_dir):
-        """PR can verilate with -j flag (uses thread pool)."""
+    def test_optimized_can_verilate_with_j_flag(self, temp_dir):
+        """Optimized can verilate with -j flag (uses thread pool)."""
         sv_file = temp_dir / "test.sv"
         sv_file.write_text("module test(input clk, output reg q); always @(posedge clk) q <= ~q; endmodule")
 
         result = subprocess.run(
-            [f"{PR_DIR}/bin/verilator", "--cc", "-j", "4", str(sv_file)],
+            [f"{OPTIMIZED_DIR}/bin/verilator", "--cc", "-j", "4", str(sv_file)],
             capture_output=True, text=True,
             cwd=temp_dir
         )
-        assert result.returncode == 0, f"PR verilate with -j failed: {result.stderr}"
+        assert result.returncode == 0, f"Optimized verilate with -j failed: {result.stderr}"
 
 
 if __name__ == "__main__":
