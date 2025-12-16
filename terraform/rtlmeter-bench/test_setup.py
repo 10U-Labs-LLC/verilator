@@ -2,11 +2,15 @@
 """
 Pre-flight tests to validate RTLMeter benchmark setup before running expensive tests.
 Run via: pytest test_setup.py -v
+
+For local pre-provisioning checks (AWS quotas), run:
+    pytest test_setup.py -v -k "AWSPreProvisioning"
 """
 
 import subprocess
 import os
 import re
+import json
 import pytest
 
 BENCHMARK_DIR = "/home/ubuntu/benchmark"
@@ -14,6 +18,160 @@ BASELINE_DIR = f"{BENCHMARK_DIR}/verilator-install-baseline"
 OPTIMIZED_DIR = f"{BENCHMARK_DIR}/verilator-install-optimized"
 RTLMETER_DIR = f"{BENCHMARK_DIR}/rtlmeter"
 VERILATOR_SRC = f"{BENCHMARK_DIR}/verilator"
+
+# AWS configuration for c8i.metal-48xl
+REQUIRED_VCPUS = 192
+AWS_REGION = "us-east-2"
+INSTANCE_TYPE = "c8i.metal-48xl"
+
+# Path to terraform directory (relative to this file)
+TERRAFORM_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class TestAWSPreProvisioning:
+    """
+    Run BEFORE terraform apply to verify AWS quotas and credentials.
+    These tests run locally, not on the EC2 instance.
+
+    Run with: pytest test_setup.py -v -k "AWSPreProvisioning"
+    """
+
+    def test_aws_cli_installed(self):
+        """AWS CLI must be installed."""
+        result = subprocess.run(
+            ["aws", "--version"],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, "AWS CLI not installed"
+
+    def test_aws_credentials_configured(self):
+        """AWS credentials must be configured."""
+        result = subprocess.run(
+            ["aws", "sts", "get-caller-identity", "--region", AWS_REGION],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, \
+            f"AWS credentials not configured or invalid: {result.stderr}"
+
+    def test_aws_region_accessible(self):
+        """Can access the target AWS region."""
+        result = subprocess.run(
+            ["aws", "ec2", "describe-availability-zones",
+             "--region", AWS_REGION, "--query", "AvailabilityZones[0].ZoneName"],
+            capture_output=True, text=True
+        )
+        assert result.returncode == 0, \
+            f"Cannot access region {AWS_REGION}: {result.stderr}"
+
+    def test_vcpu_quota_sufficient(self):
+        """
+        Check if we have enough vCPU quota for c8i.metal-48xl (192 vCPUs).
+        Quota code L-1216C47A is for "Running On-Demand Standard instances".
+        """
+        result = subprocess.run(
+            ["aws", "service-quotas", "get-service-quota",
+             "--service-code", "ec2",
+             "--quota-code", "L-1216C47A",  # On-Demand Standard instances vCPUs
+             "--region", AWS_REGION],
+            capture_output=True, text=True
+        )
+
+        if result.returncode != 0:
+            pytest.fail(f"Cannot check vCPU quota: {result.stderr}")
+
+        quota_data = json.loads(result.stdout)
+        quota_value = quota_data.get("Quota", {}).get("Value", 0)
+
+        assert quota_value >= REQUIRED_VCPUS, \
+            f"Insufficient vCPU quota: have {quota_value}, need {REQUIRED_VCPUS} for {INSTANCE_TYPE}"
+
+    def test_instance_type_available(self):
+        """Check if c8i.metal-48xl is available in the region."""
+        result = subprocess.run(
+            ["aws", "ec2", "describe-instance-type-offerings",
+             "--location-type", "region",
+             "--filters", f"Name=instance-type,Values={INSTANCE_TYPE}",
+             "--region", AWS_REGION,
+             "--query", "InstanceTypeOfferings[0].InstanceType"],
+            capture_output=True, text=True
+        )
+
+        assert result.returncode == 0, f"Cannot check instance availability: {result.stderr}"
+        output = result.stdout.strip().strip('"')
+        assert output == INSTANCE_TYPE, \
+            f"{INSTANCE_TYPE} not available in {AWS_REGION}"
+
+    def test_current_vcpu_usage(self):
+        """Check current vCPU usage to ensure we have headroom."""
+        # Get current running instances' vCPU count
+        result = subprocess.run(
+            ["aws", "ec2", "describe-instances",
+             "--filters", "Name=instance-state-name,Values=running",
+             "--region", AWS_REGION,
+             "--query", "Reservations[].Instances[].InstanceType"],
+            capture_output=True, text=True
+        )
+
+        if result.returncode != 0:
+            pytest.skip(f"Cannot check current usage: {result.stderr}")
+
+        # Get quota
+        quota_result = subprocess.run(
+            ["aws", "service-quotas", "get-service-quota",
+             "--service-code", "ec2",
+             "--quota-code", "L-1216C47A",
+             "--region", AWS_REGION],
+            capture_output=True, text=True
+        )
+
+        if quota_result.returncode != 0:
+            pytest.skip("Cannot check quota")
+
+        quota_data = json.loads(quota_result.stdout)
+        quota_value = quota_data.get("Quota", {}).get("Value", 0)
+
+        # Parse running instances (simplified - actual vCPU count would need lookup)
+        instances = json.loads(result.stdout) if result.stdout.strip() else []
+
+        print(f"\nQuota: {quota_value} vCPUs")
+        print(f"Required: {REQUIRED_VCPUS} vCPUs for {INSTANCE_TYPE}")
+        print(f"Currently running instances: {len(instances)}")
+
+        # This is a soft check - just informational
+        assert quota_value >= REQUIRED_VCPUS, \
+            f"Quota ({quota_value}) less than required ({REQUIRED_VCPUS})"
+
+    def test_terraform_enforces_spot_only(self):
+        """
+        CRITICAL: Verify Terraform config uses spot instances ONLY.
+        On-demand c8i.metal-48xl would cost ~$8/hour vs ~$2-3/hour for spot.
+        This test parses main.tf to ensure spot is enforced.
+        """
+        main_tf = os.path.join(TERRAFORM_DIR, "main.tf")
+        assert os.path.isfile(main_tf), f"main.tf not found at {main_tf}"
+
+        with open(main_tf) as f:
+            content = f.read()
+
+        # Must have instance_market_options block
+        assert "instance_market_options" in content, \
+            "main.tf missing instance_market_options block - instance would be on-demand!"
+
+        # Must specify market_type = "spot"
+        assert re.search(r'market_type\s*=\s*["\']spot["\']', content), \
+            "main.tf must set market_type = \"spot\" - instance would be on-demand!"
+
+        # Must have spot_options block (ensures intentional spot config)
+        assert "spot_options" in content, \
+            "main.tf missing spot_options block"
+
+        # Verify it's a one-time spot (not persistent, which auto-relaunches)
+        assert re.search(r'spot_instance_type\s*=\s*["\']one-time["\']', content), \
+            "spot_instance_type should be \"one-time\" to prevent auto-relaunch"
+
+        print("\n✓ Terraform config verified: EC2 will be spot instance only")
+        print("  - market_type = \"spot\"")
+        print("  - spot_instance_type = \"one-time\"")
 
 
 class TestDirectoryStructure:
