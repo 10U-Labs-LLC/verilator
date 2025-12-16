@@ -15,16 +15,19 @@ PHASE 2: Infrastructure provisioning
 PHASE 3: Benchmark execution
   - Runs benchmark.py (builds Verilator, runs RTLMeter)
 
-PHASE 4: On-instance validation (runs on EC2)
-  - pytest test_setup.py (validates everything is set up correctly)
+PHASE 4: On-instance validation
+  - Runs pytest test_setup.py on EC2 to validate setup
 
-PHASE 5: Cleanup
+PHASE 5: Results retrieval
+  - Fetches results JSON files from EC2 to local machine
+
+PHASE 6: Cleanup
   - terraform destroy (terminates EC2 instance)
 
 Usage:
-    python3 run_preflight.py              # Full run
-    python3 run_preflight.py --preflight  # Pre-flight only (no EC2)
-    python3 run_preflight.py --skip-preflight  # Skip pre-flight, run benchmarks
+    python3 run.py              # Full run
+    python3 run.py --preflight  # Pre-flight only (no EC2)
+    python3 run.py --skip-preflight  # Skip pre-flight, run benchmarks
 
 Exit codes:
     0 - All checks passed and benchmarks completed
@@ -34,8 +37,10 @@ Exit codes:
 import subprocess
 import sys
 import os
+import json
 import argparse
 from pathlib import Path
+from datetime import datetime
 
 # Change to script directory
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -141,10 +146,269 @@ def phase_benchmark() -> bool:
     )
 
 
+def get_instance_id() -> str | None:
+    """Get the EC2 instance ID from Terraform output."""
+    result = subprocess.run(
+        ["terraform", "output", "-raw", "instance_id"],
+        capture_output=True, text=True, check=False
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return None
+
+
+def phase_retrieve_results() -> bool:
+    """Fetch results from EC2 before destroying it."""
+    print("\n" + "#" * 60)
+    print("  PHASE 4: RESULTS RETRIEVAL")
+    print("#" * 60)
+
+    instance_id = get_instance_id()
+    if not instance_id:
+        print("  No instance ID found, skipping results retrieval")
+        return False
+
+    # Create results directory with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_dir = SCRIPT_DIR / "results" / timestamp
+    results_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n  Saving results to: {results_dir}")
+
+    # Get list of result files on EC2
+    print("\n  Fetching result files from EC2...")
+    list_cmd = subprocess.run(
+        ["aws", "ssm", "send-command",
+         "--instance-ids", instance_id,
+         "--document-name", "AWS-RunShellScript",
+         "--parameters", json.dumps({
+             "commands": [
+                 "ls -1 /home/ubuntu/benchmark/results_*.json "
+                 "/home/ubuntu/benchmark/comparison_summary.txt 2>/dev/null || echo 'NO_RESULTS'"
+             ]
+         }),
+         "--output", "json"],
+        capture_output=True, text=True, check=False
+    )
+
+    if list_cmd.returncode != 0:
+        print(f"  Failed to list results: {list_cmd.stderr}")
+        return False
+
+    cmd_data = json.loads(list_cmd.stdout)
+    command_id = cmd_data["Command"]["CommandId"]
+
+    # Wait for command to complete
+    import time
+    for _ in range(30):
+        time.sleep(2)
+        result = subprocess.run(
+            ["aws", "ssm", "get-command-invocation",
+             "--command-id", command_id,
+             "--instance-id", instance_id,
+             "--output", "json"],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0:
+            invocation = json.loads(result.stdout)
+            if invocation["Status"] == "Success":
+                file_list = invocation.get("StandardOutputContent", "").strip()
+                break
+            if invocation["Status"] in ("Failed", "Cancelled", "TimedOut"):
+                print(f"  Command failed: {invocation['Status']}")
+                return False
+    else:
+        print("  Timeout waiting for file list")
+        return False
+
+    if "NO_RESULTS" in file_list or not file_list:
+        print("  No result files found on EC2")
+        return False
+
+    result_files = file_list.strip().split("\n")
+    print(f"  Found {len(result_files)} result files")
+
+    # Fetch each file
+    for remote_path in result_files:
+        filename = os.path.basename(remote_path)
+        print(f"  Fetching {filename}...")
+
+        # Use SSM to cat the file content
+        cat_cmd = subprocess.run(
+            ["aws", "ssm", "send-command",
+             "--instance-ids", instance_id,
+             "--document-name", "AWS-RunShellScript",
+             "--parameters", json.dumps({
+                 "commands": [f"cat {remote_path}"]
+             }),
+             "--output", "json"],
+            capture_output=True, text=True, check=False
+        )
+
+        if cat_cmd.returncode != 0:
+            print(f"    Failed to fetch {filename}")
+            continue
+
+        cmd_data = json.loads(cat_cmd.stdout)
+        command_id = cmd_data["Command"]["CommandId"]
+
+        # Wait for content
+        for _ in range(30):
+            time.sleep(2)
+            result = subprocess.run(
+                ["aws", "ssm", "get-command-invocation",
+                 "--command-id", command_id,
+                 "--instance-id", instance_id,
+                 "--output", "json"],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                invocation = json.loads(result.stdout)
+                if invocation["Status"] == "Success":
+                    content = invocation.get("StandardOutputContent", "")
+                    local_path = results_dir / filename
+                    local_path.write_text(content)
+                    print(f"    Saved to {local_path}")
+                    break
+                if invocation["Status"] in ("Failed", "Cancelled", "TimedOut"):
+                    print(f"    Failed: {invocation['Status']}")
+                    break
+
+    # Also fetch the RTLMeter reports (stdout from benchmark runs)
+    print("\n  Fetching RTLMeter summary report...")
+    report_cmd = subprocess.run(
+        ["aws", "ssm", "send-command",
+         "--instance-ids", instance_id,
+         "--document-name", "AWS-RunShellScript",
+         "--parameters", json.dumps({
+             "commands": [
+                 "cd /home/ubuntu/benchmark/rtlmeter && "
+                 "for f in /home/ubuntu/benchmark/results_*.json; do "
+                 "echo '=== '$(basename $f)' ===' && "
+                 "./rtlmeter report --steps '*' --metrics '*' $f; "
+                 "done"
+             ]
+         }),
+         "--output", "json"],
+        capture_output=True, text=True, check=False
+    )
+
+    if report_cmd.returncode == 0:
+        cmd_data = json.loads(report_cmd.stdout)
+        command_id = cmd_data["Command"]["CommandId"]
+
+        for _ in range(60):
+            time.sleep(2)
+            result = subprocess.run(
+                ["aws", "ssm", "get-command-invocation",
+                 "--command-id", command_id,
+                 "--instance-id", instance_id,
+                 "--output", "json"],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                invocation = json.loads(result.stdout)
+                if invocation["Status"] == "Success":
+                    report = invocation.get("StandardOutputContent", "")
+                    report_path = results_dir / "summary_report.txt"
+                    report_path.write_text(report)
+                    print(f"  Saved summary report to {report_path}")
+                    break
+                if invocation["Status"] in ("Failed", "Cancelled", "TimedOut"):
+                    break
+
+    print(f"\n  Results saved to: {results_dir}")
+    return True
+
+
+def phase_validate_on_instance() -> bool:
+    """Run validation tests on EC2 instance."""
+    print("\n" + "#" * 60)
+    print("  PHASE 4: ON-INSTANCE VALIDATION")
+    print("#" * 60)
+
+    instance_id = get_instance_id()
+    if not instance_id:
+        print("  No instance ID found, skipping validation")
+        return False
+
+    import time
+
+    # Copy test_setup.py to EC2 and run it
+    print("\n  Running pytest on EC2 instance...")
+    print("  (excluding AWSPreProvisioning tests - those are local only)")
+
+    # First, copy test_setup.py to the instance
+    test_file = SCRIPT_DIR / "test_setup.py"
+    test_content = test_file.read_text()
+
+    # Upload and run tests via SSM
+    validate_cmd = subprocess.run(
+        ["aws", "ssm", "send-command",
+         "--instance-ids", instance_id,
+         "--document-name", "AWS-RunShellScript",
+         "--parameters", json.dumps({
+             "commands": [
+                 # Install pytest if not present
+                 "pip3 install --user pytest",
+                 # Create test file
+                 f"cat > /home/ubuntu/benchmark/test_setup.py << 'TESTEOF'\n{test_content}\nTESTEOF",
+                 # Run tests excluding AWSPreProvisioning (those are local)
+                 "cd /home/ubuntu/benchmark && "
+                 "python3 -m pytest test_setup.py -v "
+                 "--ignore-glob='*AWSPreProvisioning*' "
+                 "-k 'not AWSPreProvisioning' "
+                 "--tb=short 2>&1 || true"
+             ]
+         }),
+         "--timeout-seconds", "600",
+         "--output", "json"],
+        capture_output=True, text=True, check=False
+    )
+
+    if validate_cmd.returncode != 0:
+        print(f"  Failed to run validation: {validate_cmd.stderr}")
+        return False
+
+    cmd_data = json.loads(validate_cmd.stdout)
+    command_id = cmd_data["Command"]["CommandId"]
+
+    # Wait for validation to complete
+    for _ in range(120):  # 4 minutes max
+        time.sleep(2)
+        result = subprocess.run(
+            ["aws", "ssm", "get-command-invocation",
+             "--command-id", command_id,
+             "--instance-id", instance_id,
+             "--output", "json"],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0:
+            invocation = json.loads(result.stdout)
+            status = invocation["Status"]
+            if status == "Success":
+                output = invocation.get("StandardOutputContent", "")
+                print(output)
+                # Check if tests passed
+                if "failed" in output.lower() and "0 failed" not in output.lower():
+                    print("\n  VALIDATION FAILED - Some tests did not pass")
+                    return False
+                print("\n  VALIDATION PASSED")
+                return True
+            if status in ("Failed", "Cancelled", "TimedOut"):
+                print(f"  Validation command {status}")
+                print(invocation.get("StandardOutputContent", ""))
+                print(invocation.get("StandardErrorContent", ""))
+                return False
+        print(".", end="", flush=True)
+
+    print("\n  Timeout waiting for validation")
+    return False
+
+
 def phase_cleanup() -> bool:
     """Destroy EC2 instance."""
     print("\n" + "#" * 60)
-    print("  PHASE 5: CLEANUP")
+    print("  PHASE 6: CLEANUP")
     print("#" * 60)
 
     return run_cmd(
@@ -198,19 +462,36 @@ def main() -> int:
     # Phase 3: Benchmark
     benchmark_passed = phase_benchmark()
 
-    # Phase 5: Cleanup (always run)
+    # Phase 4: On-instance validation
+    validation_passed = phase_validate_on_instance()
+
+    # Phase 5: Retrieve results (always try, even if benchmark/validation failed)
+    results_retrieved = phase_retrieve_results()
+
+    # Phase 6: Cleanup (always run)
     phase_cleanup()
 
     # Final summary
     print("\n" + "=" * 60)
     print("  FINAL SUMMARY")
     print("=" * 60)
-    if benchmark_passed:
-        print("  BENCHMARKS COMPLETED SUCCESSFULLY")
-        print("  Check results in /home/ubuntu/benchmark/results_*.json")
+
+    if benchmark_passed and validation_passed and results_retrieved:
+        print("  ALL PHASES COMPLETED SUCCESSFULLY")
+        print(f"  Results saved to: {SCRIPT_DIR}/results/")
         return 0
 
-    print("  BENCHMARKS FAILED")
+    issues = []
+    if not benchmark_passed:
+        issues.append("Benchmarks failed")
+    if not validation_passed:
+        issues.append("On-instance validation failed")
+    if not results_retrieved:
+        issues.append("Results retrieval failed")
+
+    print(f"  ISSUES: {', '.join(issues)}")
+    if results_retrieved:
+        print(f"  Results saved to: {SCRIPT_DIR}/results/")
     return 1
 
 

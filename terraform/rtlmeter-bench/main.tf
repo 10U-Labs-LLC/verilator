@@ -39,13 +39,25 @@ resource "aws_iam_instance_profile" "ssm_profile" {
   role = aws_iam_role.ssm_role.name
 }
 
+# Look up default VPC
+data "aws_vpc" "default" {
+  default = true
+}
+
+# Look up subnet in the specified availability zone
+data "aws_subnet" "selected" {
+  vpc_id            = data.aws_vpc.default.id
+  availability_zone = var.availability_zone
+  default_for_az    = true
+}
+
 # Spot EC2 instance
 resource "aws_instance" "benchmark" {
   ami                  = var.ami_id
   instance_type        = var.instance_type
   iam_instance_profile = aws_iam_instance_profile.ssm_profile.name
   availability_zone    = var.availability_zone
-  subnet_id            = "subnet-090628a5f06ca83cb" # us-east-2a in default VPC
+  subnet_id            = data.aws_subnet.selected.id
 
   instance_market_options {
     market_type = "spot"

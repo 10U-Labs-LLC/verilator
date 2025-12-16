@@ -216,15 +216,49 @@ def main():
             threads=threads
         )
 
+    # Generate comparison summary
     print("\n" + "="*60)
-    print("=== Benchmark Complete ===")
+    print("=== COMPARISON SUMMARY ===")
     print("="*60)
-    print(f"\nThread counts tested: {thread_counts}")
-    print("Results saved to /home/ubuntu/benchmark/results_*.json")
-    print("\nTo compare results:")
+
+    summary_lines = [
+        "RTLMeter Benchmark Results: V3ThreadPool wait() Optimization",
+        "=" * 60,
+        f"Instance: c8i.metal-48xl (192 vCPUs, 384GB RAM)",
+        f"Thread counts tested: {thread_counts}",
+        "",
+        "Optimization: Replace busy-wait with condition variable in V3ThreadPool::wait()",
+        "  Before: while (m_pendingJobs > 0) std::this_thread::yield();",
+        "  After:  m_completionCV.wait() with notify on job completion",
+        "",
+        "=" * 60,
+        "Results by thread count:",
+        ""
+    ]
+
     for threads in thread_counts:
-        print(f"  - baseline vs optimized at {threads} threads")
-    print("\nRun 'terraform destroy' to clean up the instance.")
+        summary_lines.append(f"--- {threads} threads ---")
+        summary_lines.append(f"Baseline output length: {len(results.get(f'baseline-t{threads}', ''))} chars")
+        summary_lines.append(f"Optimized output length: {len(results.get(f'optimized-t{threads}', ''))} chars")
+        summary_lines.append("")
+
+    summary_lines.extend([
+        "=" * 60,
+        "Full RTLMeter reports are in /home/ubuntu/benchmark/results_*.json",
+        "These will be retrieved by run.py before instance termination.",
+        "=" * 60
+    ])
+
+    summary = "\n".join(summary_lines)
+    print(summary)
+
+    # Save summary to file on EC2
+    save_summary_cmd = f'''cat > /home/ubuntu/benchmark/comparison_summary.txt << 'SUMMARYEOF'
+{summary}
+SUMMARYEOF'''
+
+    ssm_run(instance_id, [save_summary_cmd], timeout=60)
+    print("\nSummary saved to /home/ubuntu/benchmark/comparison_summary.txt")
 
 
 if __name__ == "__main__":
