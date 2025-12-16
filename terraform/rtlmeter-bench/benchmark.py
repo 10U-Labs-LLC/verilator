@@ -101,7 +101,7 @@ def setup_instance(instance_id: str) -> None:
         "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "
         "git perl python3 python3-pip make autoconf g++ flex bison ccache "
         "libgoogle-perftools-dev numactl perl-doc libfl2 libfl-dev zlib1g zlib1g-dev "
-        "help2man",
+        "help2man awscli",
         "pip3 install --user pyyaml tabulate scipy",
         "mkdir -p /home/ubuntu/benchmark",
         # Clone from fork (has both upstream tracking and our branch)

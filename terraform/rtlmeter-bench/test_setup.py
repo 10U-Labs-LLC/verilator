@@ -227,6 +227,52 @@ class TestAWSPreProvisioning:
 
         print("\n  Terraform config verified: S3 bucket name in outputs")
 
+    def test_ami_exists(self):
+        """Verify the AMI specified in variables.tf exists and is available."""
+        variables_tf = os.path.join(TERRAFORM_DIR, "variables.tf")
+        with open(variables_tf, encoding="utf-8") as f:
+            content = f.read()
+
+        # Extract AMI ID from variables.tf
+        ami_match = re.search(r'default\s*=\s*"(ami-[a-z0-9]+)"', content)
+        assert ami_match, "Could not find AMI ID in variables.tf"
+        ami_id = ami_match.group(1)
+
+        # Verify AMI exists in the region
+        result = subprocess.run(
+            ["aws", "ec2", "describe-images",
+             "--image-ids", ami_id,
+             "--region", AWS_REGION,
+             "--query", "Images[0].State"],
+            capture_output=True, text=True, check=False
+        )
+
+        assert result.returncode == 0, \
+            f"AMI {ami_id} not found in {AWS_REGION}: {result.stderr}"
+
+        state = result.stdout.strip().strip('"')
+        assert state == "available", \
+            f"AMI {ami_id} is not available (state: {state})"
+
+        print(f"\n  AMI {ami_id} verified: available in {AWS_REGION}")
+
+    def test_git_branch_exists(self):
+        """Verify the optimized branch exists in the fork repo."""
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads",
+             "https://github.com/10U-Labs-LLC/verilator.git",
+             "optimize-threadpool-wait-cv"],
+            capture_output=True, text=True, check=False
+        )
+
+        assert result.returncode == 0, \
+            f"Cannot check git branch: {result.stderr}"
+
+        assert "optimize-threadpool-wait-cv" in result.stdout, \
+            "Branch 'optimize-threadpool-wait-cv' not found in fork repo"
+
+        print("\n  Git branch 'optimize-threadpool-wait-cv' verified: exists")
+
 
 class TestDirectoryStructure:
     """Verify all required directories exist."""
