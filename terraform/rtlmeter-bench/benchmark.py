@@ -176,8 +176,8 @@ def main():
     setup_instance(instance_id)
 
     # Thread counts to test - higher counts stress the thread pool more
-    # c8i.metal-48xl has 96 vCPUs (48 physical cores)
-    thread_counts = [8, 16, 32, 48]
+    # c8i.metal-48xl has 192 vCPUs (96 physical cores x 2 threads)
+    thread_counts = [16, 32, 64, 96]
 
     # Build baseline (upstream master)
     build_verilator(

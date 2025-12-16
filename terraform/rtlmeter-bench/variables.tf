@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "instance_type" {
   description = "EC2 instance type"
   type        = string
-  default     = "c8i.metal-48xl"  # 96 vCPUs (48 physical cores), 384GB RAM - bare metal
+  default     = "c8i.metal-48xl"  # 192 vCPUs (96 physical cores), 384GB RAM - bare metal
 }
 
 variable "availability_zone" {

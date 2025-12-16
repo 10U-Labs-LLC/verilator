@@ -194,10 +194,10 @@ class TestSystemResources:
     """Verify system has adequate resources for c8i.metal-48xl."""
 
     def test_cpu_count(self):
-        """c8i.metal-48xl has 96 vCPUs."""
+        """c8i.metal-48xl has 192 vCPUs (96 cores x 2 threads)."""
         cpu_count = os.cpu_count()
         assert cpu_count is not None
-        assert cpu_count >= 90, f"Expected at least 90 CPUs (c8i.metal-48xl has 96), got {cpu_count}"
+        assert cpu_count >= 190, f"Expected at least 190 vCPUs (c8i.metal-48xl has 192), got {cpu_count}"
 
     def test_memory_available(self):
         """c8i.metal-48xl has 384GB RAM."""
