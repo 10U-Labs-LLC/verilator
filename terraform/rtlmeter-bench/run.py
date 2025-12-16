@@ -19,15 +19,18 @@ PHASE 4: On-instance validation
   - Runs pytest test_setup.py on EC2 to validate setup
 
 PHASE 5: Results retrieval
+  - Uploads results to S3 (backup)
   - Fetches results JSON files from EC2 to local machine
 
 PHASE 6: Cleanup
-  - terraform destroy (terminates EC2 instance)
+  - ALWAYS terminates EC2 instance
+  - terraform destroy (unless --keep-infra)
 
 Usage:
     python3 run.py              # Full run
     python3 run.py --preflight  # Pre-flight only (no EC2)
     python3 run.py --skip-preflight  # Skip pre-flight, run benchmarks
+    python3 run.py --keep-infra # Keep IAM/S3 after run (for subsequent runs)
 
 Exit codes:
     0 - All checks passed and benchmarks completed
@@ -157,10 +160,37 @@ def get_instance_id() -> str | None:
     return None
 
 
+def get_s3_bucket() -> str | None:
+    """Get the S3 bucket name from Terraform output."""
+    result = subprocess.run(
+        ["terraform", "output", "-raw", "s3_bucket"],
+        capture_output=True, text=True, check=False
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return None
+
+
+def terminate_ec2_instance(instance_id: str) -> bool:
+    """Terminate EC2 instance directly via AWS CLI."""
+    print(f"\n  Terminating EC2 instance {instance_id}...")
+    result = subprocess.run(
+        ["aws", "ec2", "terminate-instances",
+         "--instance-ids", instance_id,
+         "--region", "us-east-2"],
+        capture_output=True, text=True, check=False
+    )
+    if result.returncode == 0:
+        print(f"  EC2 instance {instance_id} terminated")
+        return True
+    print(f"  Failed to terminate: {result.stderr}")
+    return False
+
+
 def phase_retrieve_results() -> bool:
     """Fetch results from EC2 before destroying it."""
     print("\n" + "#" * 60)
-    print("  PHASE 4: RESULTS RETRIEVAL")
+    print("  PHASE 5: RESULTS RETRIEVAL")
     print("#" * 60)
 
     instance_id = get_instance_id()
@@ -168,11 +198,61 @@ def phase_retrieve_results() -> bool:
         print("  No instance ID found, skipping results retrieval")
         return False
 
+    s3_bucket = get_s3_bucket()
+
     # Create results directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_dir = SCRIPT_DIR / "results" / timestamp
     results_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n  Saving results to: {results_dir}")
+
+    import time
+
+    # First, upload results to S3 from EC2 (backup)
+    if s3_bucket:
+        print(f"\n  Uploading results to S3 bucket: {s3_bucket}")
+        s3_upload_cmd = subprocess.run(
+            ["aws", "ssm", "send-command",
+             "--instance-ids", instance_id,
+             "--document-name", "AWS-RunShellScript",
+             "--parameters", json.dumps({
+                 "commands": [
+                     f"aws s3 cp /home/ubuntu/benchmark/ s3://{s3_bucket}/{timestamp}/ "
+                     "--recursive --exclude '*' "
+                     "--include 'results_*.json' --include 'comparison_summary.txt' "
+                     "--region us-east-2"
+                 ]
+             }),
+             "--output", "json"],
+            capture_output=True, text=True, check=False
+        )
+
+        if s3_upload_cmd.returncode == 0:
+            cmd_data = json.loads(s3_upload_cmd.stdout)
+            command_id = cmd_data["Command"]["CommandId"]
+            for _ in range(30):
+                time.sleep(2)
+                result = subprocess.run(
+                    ["aws", "ssm", "get-command-invocation",
+                     "--command-id", command_id,
+                     "--instance-id", instance_id,
+                     "--output", "json"],
+                    capture_output=True, text=True, check=False
+                )
+                if result.returncode == 0:
+                    invocation = json.loads(result.stdout)
+                    if invocation["Status"] == "Success":
+                        print(f"  Results backed up to s3://{s3_bucket}/{timestamp}/")
+                        # Save S3 path to local file
+                        (results_dir / "s3_backup_path.txt").write_text(
+                            f"s3://{s3_bucket}/{timestamp}/\n"
+                        )
+                        break
+                    if invocation["Status"] in ("Failed", "Cancelled", "TimedOut"):
+                        print(f"  S3 upload failed: {invocation['Status']}")
+                        break
+    else:
+        print("  No S3 bucket found, skipping S3 backup")
 
     # Get list of result files on EC2
     print("\n  Fetching result files from EC2...")
@@ -405,15 +485,28 @@ def phase_validate_on_instance() -> bool:
     return False
 
 
-def phase_cleanup() -> bool:
-    """Destroy EC2 instance."""
+def phase_cleanup(keep_infra: bool = False) -> bool:
+    """Terminate EC2 and optionally destroy all infrastructure."""
     print("\n" + "#" * 60)
     print("  PHASE 6: CLEANUP")
     print("#" * 60)
 
+    # ALWAYS terminate EC2 instance first (even with --keep-infra)
+    instance_id = get_instance_id()
+    if instance_id:
+        terminate_ec2_instance(instance_id)
+    else:
+        print("  No instance ID found, skipping EC2 termination")
+
+    if keep_infra:
+        print("\n  --keep-infra: Keeping IAM roles, S3 bucket, etc.")
+        print("  Run 'terraform destroy' manually to clean up remaining resources.")
+        return True
+
+    # Full terraform destroy
     return run_cmd(
         ["terraform", "destroy", "-auto-approve"],
-        "Terraform destroy (terminating EC2 instance)",
+        "Terraform destroy (cleaning up all resources)",
         check=False  # Always try to clean up
     )
 
@@ -425,6 +518,8 @@ def main() -> int:
                         help="Run pre-flight checks only (no EC2)")
     parser.add_argument("--skip-preflight", action="store_true",
                         help="Skip pre-flight checks, run benchmarks directly")
+    parser.add_argument("--keep-infra", action="store_true",
+                        help="Keep IAM/S3 after run (EC2 always terminated)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -456,7 +551,7 @@ def main() -> int:
     # Phase 2: Provision
     if not phase_provision():
         print("\n  PROVISIONING FAILED")
-        phase_cleanup()  # Try to clean up
+        phase_cleanup(args.keep_infra)  # Try to clean up
         return 1
 
     # Phase 3: Benchmark
@@ -468,8 +563,8 @@ def main() -> int:
     # Phase 5: Retrieve results (always try, even if benchmark/validation failed)
     results_retrieved = phase_retrieve_results()
 
-    # Phase 6: Cleanup (always run)
-    phase_cleanup()
+    # Phase 6: Cleanup (always run - EC2 ALWAYS terminated)
+    phase_cleanup(args.keep_infra)
 
     # Final summary
     print("\n" + "=" * 60)

@@ -34,6 +34,51 @@ resource "aws_iam_role_policy_attachment" "ssm_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+# S3 bucket for results backup
+resource "aws_s3_bucket" "results" {
+  bucket_prefix = "rtlmeter-results-"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "results" {
+  bucket = aws_s3_bucket.results.id
+
+  rule {
+    id     = "expire-old-results"
+    status = "Enabled"
+
+    filter {} # Apply to all objects
+
+    expiration {
+      days = 90
+    }
+  }
+}
+
+# Allow EC2 to write to S3
+resource "aws_iam_role_policy" "s3_write" {
+  name = "rtlmeter-s3-write"
+  role = aws_iam_role.ssm_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.results.arn,
+          "${aws_s3_bucket.results.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "ssm_profile" {
   name = "rtlmeter-bench-ssm-profile"
   role = aws_iam_role.ssm_role.name

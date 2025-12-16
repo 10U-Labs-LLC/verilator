@@ -12,3 +12,8 @@ output "private_ip" {
   description = "Private IP address"
   value       = aws_instance.benchmark.private_ip
 }
+
+output "s3_bucket" {
+  description = "S3 bucket for results backup"
+  value       = aws_s3_bucket.results.bucket
+}
