@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "instance_type" {
   description = "EC2 instance type"
   type        = string
-  default     = "c8i.metal-48xl"  # 192 vCPUs (96 physical cores), 384GB RAM - bare metal
+  default     = "c8i.metal-48xl" # 192 vCPUs (96 physical cores), 384GB RAM - bare metal
 }
 
 variable "availability_zone" {
@@ -19,7 +19,7 @@ variable "availability_zone" {
 variable "ami_id" {
   description = "Ubuntu 24.04 AMI ID"
   type        = string
-  default     = "ami-06e3c045d79fd65d9"  # Ubuntu 24.04 in us-east-2
+  default     = "ami-06e3c045d79fd65d9" # Ubuntu 24.04 in us-east-2
 }
 
 variable "root_volume_size" {

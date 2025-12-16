@@ -40,7 +40,7 @@ class TestAWSPreProvisioning:
         """AWS CLI must be installed."""
         result = subprocess.run(
             ["aws", "--version"],
-            capture_output=True, text=True
+            capture_output=True, text=True, check=False
         )
         assert result.returncode == 0, "AWS CLI not installed"
 
@@ -48,7 +48,7 @@ class TestAWSPreProvisioning:
         """AWS credentials must be configured."""
         result = subprocess.run(
             ["aws", "sts", "get-caller-identity", "--region", AWS_REGION],
-            capture_output=True, text=True
+            capture_output=True, text=True, check=False
         )
         assert result.returncode == 0, \
             f"AWS credentials not configured or invalid: {result.stderr}"
@@ -57,8 +57,9 @@ class TestAWSPreProvisioning:
         """Can access the target AWS region."""
         result = subprocess.run(
             ["aws", "ec2", "describe-availability-zones",
-             "--region", AWS_REGION, "--query", "AvailabilityZones[0].ZoneName"],
-            capture_output=True, text=True
+             "--region", AWS_REGION,
+             "--query", "AvailabilityZones[0].ZoneName"],
+            capture_output=True, text=True, check=False
         )
         assert result.returncode == 0, \
             f"Cannot access region {AWS_REGION}: {result.stderr}"
@@ -66,14 +67,15 @@ class TestAWSPreProvisioning:
     def test_vcpu_quota_sufficient(self):
         """
         Check if we have enough vCPU quota for c8i.metal-48xl (192 vCPUs).
-        Quota code L-1216C47A is for "Running On-Demand Standard instances".
+        Quota code L-34B43A08 is for "All Standard Spot Instance Requests".
+        We use spot instances to save ~75% vs on-demand.
         """
         result = subprocess.run(
             ["aws", "service-quotas", "get-service-quota",
              "--service-code", "ec2",
-             "--quota-code", "L-1216C47A",  # On-Demand Standard instances vCPUs
+             "--quota-code", "L-34B43A08",  # Spot instances quota
              "--region", AWS_REGION],
-            capture_output=True, text=True
+            capture_output=True, text=True, check=False
         )
 
         if result.returncode != 0:
@@ -83,7 +85,7 @@ class TestAWSPreProvisioning:
         quota_value = quota_data.get("Quota", {}).get("Value", 0)
 
         assert quota_value >= REQUIRED_VCPUS, \
-            f"Insufficient vCPU quota: have {quota_value}, need {REQUIRED_VCPUS} for {INSTANCE_TYPE}"
+            f"Insufficient spot vCPU quota: {quota_value}, need {REQUIRED_VCPUS}"
 
     def test_instance_type_available(self):
         """Check if c8i.metal-48xl is available in the region."""
@@ -93,35 +95,35 @@ class TestAWSPreProvisioning:
              "--filters", f"Name=instance-type,Values={INSTANCE_TYPE}",
              "--region", AWS_REGION,
              "--query", "InstanceTypeOfferings[0].InstanceType"],
-            capture_output=True, text=True
+            capture_output=True, text=True, check=False
         )
 
-        assert result.returncode == 0, f"Cannot check instance availability: {result.stderr}"
+        assert result.returncode == 0, \
+            f"Cannot check instance availability: {result.stderr}"
         output = result.stdout.strip().strip('"')
         assert output == INSTANCE_TYPE, \
             f"{INSTANCE_TYPE} not available in {AWS_REGION}"
 
     def test_current_vcpu_usage(self):
-        """Check current vCPU usage to ensure we have headroom."""
-        # Get current running instances' vCPU count
+        """Check current spot vCPU usage to ensure we have headroom."""
         result = subprocess.run(
             ["aws", "ec2", "describe-instances",
              "--filters", "Name=instance-state-name,Values=running",
+             "Name=instance-lifecycle,Values=spot",
              "--region", AWS_REGION,
              "--query", "Reservations[].Instances[].InstanceType"],
-            capture_output=True, text=True
+            capture_output=True, text=True, check=False
         )
 
         if result.returncode != 0:
             pytest.skip(f"Cannot check current usage: {result.stderr}")
 
-        # Get quota
         quota_result = subprocess.run(
             ["aws", "service-quotas", "get-service-quota",
              "--service-code", "ec2",
-             "--quota-code", "L-1216C47A",
+             "--quota-code", "L-34B43A08",  # Spot instances quota
              "--region", AWS_REGION],
-            capture_output=True, text=True
+            capture_output=True, text=True, check=False
         )
 
         if quota_result.returncode != 0:
@@ -130,16 +132,14 @@ class TestAWSPreProvisioning:
         quota_data = json.loads(quota_result.stdout)
         quota_value = quota_data.get("Quota", {}).get("Value", 0)
 
-        # Parse running instances (simplified - actual vCPU count would need lookup)
         instances = json.loads(result.stdout) if result.stdout.strip() else []
 
-        print(f"\nQuota: {quota_value} vCPUs")
+        print(f"\nSpot quota: {quota_value} vCPUs")
         print(f"Required: {REQUIRED_VCPUS} vCPUs for {INSTANCE_TYPE}")
-        print(f"Currently running instances: {len(instances)}")
+        print(f"Currently running spot instances: {len(instances)}")
 
-        # This is a soft check - just informational
         assert quota_value >= REQUIRED_VCPUS, \
-            f"Quota ({quota_value}) less than required ({REQUIRED_VCPUS})"
+            f"Spot quota ({quota_value}) less than required ({REQUIRED_VCPUS})"
 
     def test_terraform_enforces_spot_only(self):
         """

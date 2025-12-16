@@ -41,11 +41,11 @@ resource "aws_iam_instance_profile" "ssm_profile" {
 
 # Spot EC2 instance
 resource "aws_instance" "benchmark" {
-  ami                    = var.ami_id
-  instance_type          = var.instance_type
-  iam_instance_profile   = aws_iam_instance_profile.ssm_profile.name
-  availability_zone      = var.availability_zone
-  subnet_id              = "subnet-090628a5f06ca83cb"  # us-east-2a in default VPC
+  ami                  = var.ami_id
+  instance_type        = var.instance_type
+  iam_instance_profile = aws_iam_instance_profile.ssm_profile.name
+  availability_zone    = var.availability_zone
+  subnet_id            = "subnet-090628a5f06ca83cb" # us-east-2a in default VPC
 
   instance_market_options {
     market_type = "spot"
