@@ -344,6 +344,17 @@ class TestAWSPreProvisioning:
 
         print("\n  CloudWatch agent setup verified: RAM, Disk, Disk I/O")
 
+    def test_terraform_has_cloudwatch_agent_iam(self):
+        """Verify EC2 has IAM permissions for CloudWatch agent to publish metrics."""
+        main_tf = os.path.join(TERRAFORM_DIR, "main.tf")
+        with open(main_tf, encoding="utf-8") as f:
+            content = f.read()
+
+        assert "CloudWatchAgentServerPolicy" in content, \
+            "main.tf missing CloudWatchAgentServerPolicy for metrics publishing"
+
+        print("\n  CloudWatch agent IAM verified: CloudWatchAgentServerPolicy")
+
     def test_all_regions_consistent(self):
         """Verify all files use the same AWS region (us-east-2)."""
         expected_region = "us-east-2"
