@@ -138,7 +138,7 @@ def build_verilator(instance_id: str, label: str, git_ref: str,
 
 
 def run_rtlmeter(instance_id: str, label: str, install_dir: str,
-                 threads: int = 4) -> str:
+                 threads: int) -> str:
     """Run RTLMeter benchmarks and return results."""
     print(f"\n=== Running RTLMeter ({label}, threads={threads}) ===")
 
@@ -146,11 +146,11 @@ def run_rtlmeter(instance_id: str, label: str, install_dir: str,
         "cd /home/ubuntu/benchmark/rtlmeter",
         f"export PATH={install_dir}/bin:$PATH",
         f"export VERILATOR_ROOT={install_dir}",
-        f"./rtlmeter run --timeout 60 --verbose "
+        f"./rtlmeter run --timeout 120 --verbose "
         f"--cases 'VeeR-EH1:default:*' "
         f"--compileArgs '--threads {threads}'",
-        f"./rtlmeter collate --runName '{label}' > /home/ubuntu/benchmark/results_{label}.json",
-        f"./rtlmeter report --steps '*' --metrics '*' /home/ubuntu/benchmark/results_{label}.json",
+        f"./rtlmeter collate --runName '{label}-t{threads}' > /home/ubuntu/benchmark/results_{label}_t{threads}.json",
+        f"./rtlmeter report --steps '*' --metrics '*' /home/ubuntu/benchmark/results_{label}_t{threads}.json",
     ]
 
     output = ssm_run(instance_id, benchmark_commands, timeout=3600)
@@ -175,39 +175,56 @@ def main():
     wait_for_ssm(instance_id)
     setup_instance(instance_id)
 
-    # Build and run baseline (upstream master)
+    # Thread counts to test - higher counts stress the thread pool more
+    # c8i.metal-48xl has 96 vCPUs (48 physical cores)
+    thread_counts = [8, 16, 32, 48]
+
+    # Build baseline (upstream master)
     build_verilator(
         instance_id,
         label="baseline",
         git_ref="upstream/master",
         install_dir="/home/ubuntu/benchmark/verilator-install-baseline"
     )
-    baseline_results = run_rtlmeter(
-        instance_id,
-        label="baseline",
-        install_dir="/home/ubuntu/benchmark/verilator-install-baseline",
-        threads=4
-    )
-    print(f"\nBaseline results:\n{baseline_results}")
 
-    # Build and run optimized (current branch)
+    # Build optimized (current branch)
     build_verilator(
         instance_id,
         label="optimized",
         git_ref=f"origin/{OPTIMIZED_BRANCH}",
         install_dir="/home/ubuntu/benchmark/verilator-install-optimized"
     )
-    optimized_results = run_rtlmeter(
-        instance_id,
-        label="optimized",
-        install_dir="/home/ubuntu/benchmark/verilator-install-optimized",
-        threads=4
-    )
-    print(f"\nOptimized results:\n{optimized_results}")
 
-    print("\n=== Benchmark Complete ===")
+    # Run benchmarks at each thread count
+    results = {}
+    for threads in thread_counts:
+        print(f"\n{'='*60}")
+        print(f"Testing with {threads} threads")
+        print('='*60)
+
+        results[f"baseline-t{threads}"] = run_rtlmeter(
+            instance_id,
+            label="baseline",
+            install_dir="/home/ubuntu/benchmark/verilator-install-baseline",
+            threads=threads
+        )
+
+        results[f"optimized-t{threads}"] = run_rtlmeter(
+            instance_id,
+            label="optimized",
+            install_dir="/home/ubuntu/benchmark/verilator-install-optimized",
+            threads=threads
+        )
+
+    print("\n" + "="*60)
+    print("=== Benchmark Complete ===")
+    print("="*60)
+    print(f"\nThread counts tested: {thread_counts}")
     print("Results saved to /home/ubuntu/benchmark/results_*.json")
-    print("Run 'terraform destroy' to clean up the instance.")
+    print("\nTo compare results:")
+    for threads in thread_counts:
+        print(f"  - baseline vs optimized at {threads} threads")
+    print("\nRun 'terraform destroy' to clean up the instance.")
 
 
 if __name__ == "__main__":
