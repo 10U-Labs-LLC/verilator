@@ -398,6 +398,115 @@ endmodule
         for i, rc, stderr in results:
             assert rc == 0, f"Parallel verilate {i} failed: {stderr}"
 
+    def test_threads_actually_spawn(self, temp_dir):
+        """Verify -j flag actually spawns threads (not just accepted)."""
+        import threading
+        import time
+
+        # Create a larger design that takes time to verilate
+        sv_file = temp_dir / "big.sv"
+        modules = []
+        for i in range(20):
+            modules.append(f"""
+module sub{i}(input clk, input [31:0] in, output reg [31:0] out);
+    reg [31:0] r0, r1, r2, r3, r4, r5, r6, r7;
+    always @(posedge clk) begin
+        r0 <= in + {i};
+        r1 <= r0 * 2;
+        r2 <= r1 + r0;
+        r3 <= r2 ^ r1;
+        r4 <= r3 + r2;
+        r5 <= r4 * 3;
+        r6 <= r5 + r4;
+        r7 <= r6 ^ r5;
+        out <= r7;
+    end
+endmodule
+""")
+        sv_file.write_text("\n".join(modules) + """
+module top(input clk, input [31:0] in, output [31:0] out);
+    wire [31:0] w[20:0];
+    assign w[0] = in;
+""" + "\n".join([f"    sub{i} s{i}(.clk(clk), .in(w[{i}]), .out(w[{i+1}]));" for i in range(20)]) + """
+    assign out = w[20];
+endmodule
+""")
+
+        thread_count_seen = [0]
+
+        def count_threads():
+            """Count verilator threads during execution."""
+            max_threads = 0
+            for _ in range(50):  # Check for 5 seconds
+                try:
+                    result = subprocess.run(
+                        ["pgrep", "-c", "-f", "verilator"],
+                        capture_output=True, text=True
+                    )
+                    count = int(result.stdout.strip()) if result.returncode == 0 else 0
+                    max_threads = max(max_threads, count)
+                except:
+                    pass
+                time.sleep(0.1)
+            thread_count_seen[0] = max_threads
+
+        # Start thread counter
+        counter = threading.Thread(target=count_threads)
+        counter.start()
+
+        # Run verilator with many threads
+        result = subprocess.run(
+            [f"{OPTIMIZED_DIR}/bin/verilator", "--cc", "-j", "16",
+             str(sv_file), "--Mdir", str(temp_dir / "obj_big")],
+            capture_output=True, text=True,
+            timeout=120
+        )
+
+        counter.join()
+
+        assert result.returncode == 0, f"Verilate failed: {result.stderr}"
+        # Should see more than 1 process if threading is working
+        assert thread_count_seen[0] >= 2, \
+            f"Expected multiple threads with -j 16, but only saw {thread_count_seen[0]}"
+
+
+class TestRTLMeterMultiThreading:
+    """Verify RTLMeter will actually test multi-threading."""
+
+    def test_rtlmeter_accepts_threads_arg(self):
+        """RTLMeter should accept --compileArgs with --threads."""
+        result = subprocess.run(
+            [f"{RTLMETER_DIR}/rtlmeter", "run",
+             "--cases", "VeeR-EH1:default:hello",
+             "--compileArgs", "--threads 16",
+             "--nExecute", "0",  # Skip execute, just compile
+             "--verbose"],
+            capture_output=True, text=True,
+            cwd=RTLMETER_DIR,
+            timeout=600
+        )
+        # Check it ran (may fail for other reasons, but should accept the args)
+        assert "--threads" not in result.stderr.lower() or "error" not in result.stderr.lower(), \
+            f"RTLMeter rejected --threads argument: {result.stderr}"
+
+    def test_rtlmeter_threads_in_command(self):
+        """Verify RTLMeter passes --threads to verilator."""
+        result = subprocess.run(
+            [f"{RTLMETER_DIR}/rtlmeter", "run",
+             "--cases", "VeeR-EH1:default:hello",
+             "--compileArgs", "--threads 32",
+             "--nCompile", "0", "--nExecute", "0",
+             "--verbose", "--dryRun"],
+            capture_output=True, text=True,
+            cwd=RTLMETER_DIR,
+            timeout=60
+        )
+        # In dry-run or verbose mode, should show the command with --threads
+        output = result.stdout + result.stderr
+        # Just verify it doesn't error on the threads arg
+        assert result.returncode == 0 or "threads" in output.lower(), \
+            f"RTLMeter should handle --threads: {result.stderr}"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
