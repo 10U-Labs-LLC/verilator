@@ -47,8 +47,80 @@ def wait_for_ssm(instance_id: str, timeout: int = 300) -> None:
     raise TimeoutError("SSM agent did not come online in time")
 
 
+def get_instance_metrics(instance_id: str) -> dict:
+    """Get current CloudWatch metrics for the instance."""
+    from datetime import datetime, timedelta
+
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(minutes=5)
+
+    metrics = {}
+
+    # Get CPU utilization
+    result = run_cmd([
+        "aws", "cloudwatch", "get-metric-statistics",
+        "--namespace", "AWS/EC2",
+        "--metric-name", "CPUUtilization",
+        "--dimensions", f"Name=InstanceId,Value={instance_id}",
+        "--start-time", start_time.isoformat() + "Z",
+        "--end-time", end_time.isoformat() + "Z",
+        "--period", "60",
+        "--statistics", "Average",
+        "--output", "json"
+    ], check=False)
+
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        datapoints = data.get("Datapoints", [])
+        if datapoints:
+            latest = max(datapoints, key=lambda x: x["Timestamp"])
+            metrics["cpu"] = f"{latest['Average']:.1f}%"
+        else:
+            metrics["cpu"] = "N/A"
+
+    # Get network in/out
+    for metric_name, key in [("NetworkIn", "net_in"), ("NetworkOut", "net_out")]:
+        result = run_cmd([
+            "aws", "cloudwatch", "get-metric-statistics",
+            "--namespace", "AWS/EC2",
+            "--metric-name", metric_name,
+            "--dimensions", f"Name=InstanceId,Value={instance_id}",
+            "--start-time", start_time.isoformat() + "Z",
+            "--end-time", end_time.isoformat() + "Z",
+            "--period", "60",
+            "--statistics", "Sum",
+            "--output", "json"
+        ], check=False)
+
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            datapoints = data.get("Datapoints", [])
+            if datapoints:
+                latest = max(datapoints, key=lambda x: x["Timestamp"])
+                bytes_val = latest["Sum"]
+                if bytes_val > 1024*1024:
+                    metrics[key] = f"{bytes_val/1024/1024:.1f}MB"
+                else:
+                    metrics[key] = f"{bytes_val/1024:.1f}KB"
+            else:
+                metrics[key] = "N/A"
+
+    return metrics
+
+
+def print_instance_status(instance_id: str) -> None:
+    """Print current instance status and metrics."""
+    metrics = get_instance_metrics(instance_id)
+    status_line = (
+        f"[EC2 Status] CPU: {metrics.get('cpu', 'N/A')} | "
+        f"Net In: {metrics.get('net_in', 'N/A')} | "
+        f"Net Out: {metrics.get('net_out', 'N/A')}"
+    )
+    print(f"\r{status_line}", end="", flush=True)
+
+
 def ssm_run(instance_id: str, commands: list[str], timeout: int = 3600) -> str:
-    """Run commands on instance via SSM and return output."""
+    """Run commands on instance via SSM and return output with live streaming."""
     command_str = " && ".join(commands)
 
     result = run_cmd([
@@ -57,15 +129,24 @@ def ssm_run(instance_id: str, commands: list[str], timeout: int = 3600) -> str:
         "--document-name", "AWS-RunShellScript",
         "--parameters", json.dumps({"commands": [command_str]}),
         "--timeout-seconds", str(timeout),
+        "--cloud-watch-output-config",
+        json.dumps({"CloudWatchOutputEnabled": False}),
         "--output", "json"
     ])
 
     cmd_data = json.loads(result.stdout)
     command_id = cmd_data["Command"]["CommandId"]
-    print(f"SSM command {command_id} sent, waiting for completion...")
+    print(f"SSM command {command_id} sent, streaming output...")
+    print("-" * 60)
+
+    last_stdout_len = 0
+    last_stderr_len = 0
+    poll_count = 0
 
     while True:
-        time.sleep(5)
+        time.sleep(10)
+        poll_count += 1
+
         result = run_cmd([
             "aws", "ssm", "get-command-invocation",
             "--command-id", command_id,
@@ -79,16 +160,36 @@ def ssm_run(instance_id: str, commands: list[str], timeout: int = 3600) -> str:
         invocation = json.loads(result.stdout)
         status = invocation["Status"]
 
-        if status == "Success":
-            print("Command completed successfully")
-            return invocation.get("StandardOutputContent", "")
-        elif status in ("Failed", "Cancelled", "TimedOut"):
-            print(f"Command {status}")
-            print(f"STDOUT: {invocation.get('StandardOutputContent', '')}")
-            print(f"STDERR: {invocation.get('StandardErrorContent', '')}")
-            raise RuntimeError(f"SSM command {status}")
+        # Stream new output as it arrives
+        stdout = invocation.get("StandardOutputContent", "")
+        stderr = invocation.get("StandardErrorContent", "")
 
-        print(f"Status: {status}...")
+        if len(stdout) > last_stdout_len:
+            new_output = stdout[last_stdout_len:]
+            print(new_output, end="", flush=True)
+            last_stdout_len = len(stdout)
+
+        if len(stderr) > last_stderr_len:
+            new_err = stderr[last_stderr_len:]
+            print(f"[STDERR] {new_err}", end="", flush=True)
+            last_stderr_len = len(stderr)
+
+        # Print EC2 metrics every 30 seconds (every 3 polls)
+        if poll_count % 3 == 0 and status == "InProgress":
+            print()  # Newline before status
+            print_instance_status(instance_id)
+            print()  # Newline after status
+
+        if status == "Success":
+            print("\n" + "-" * 60)
+            print("Command completed successfully")
+            return stdout
+        elif status in ("Failed", "Cancelled", "TimedOut"):
+            print("\n" + "-" * 60)
+            print(f"Command {status}")
+            if stderr:
+                print(f"STDERR: {stderr}")
+            raise RuntimeError(f"SSM command {status}")
 
 
 def setup_instance(instance_id: str) -> None:
