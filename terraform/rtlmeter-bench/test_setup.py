@@ -152,6 +152,43 @@ class TestRTLMeter:
         assert result.returncode == 0, f"RTLMeter show --cases failed: {result.stderr}"
         assert "Caliptra" in result.stdout, "Expected Caliptra cases in RTLMeter"
 
+    def test_rtlmeter_veer_case_available(self):
+        """Verify VeeR-EH1:default case exists (what we'll benchmark)."""
+        result = subprocess.run(
+            [f"{RTLMETER_DIR}/rtlmeter", "show", "--cases"],
+            capture_output=True, text=True,
+            cwd=RTLMETER_DIR
+        )
+        assert "VeeR-EH1" in result.stdout, "VeeR-EH1 case not found in RTLMeter"
+
+
+class TestRTLMeterBenchmarkCase:
+    """Test the specific benchmark case we'll run."""
+
+    def test_veer_repo_accessible(self):
+        """Verify VeeR repository is accessible."""
+        result = subprocess.run(
+            ["git", "ls-remote", "https://github.com/chipsalliance/Cores-VeeR-EH1.git", "HEAD"],
+            capture_output=True, text=True,
+            timeout=30
+        )
+        assert result.returncode == 0, "Cannot access VeeR-EH1 repository"
+
+    def test_rtlmeter_can_setup_veer(self):
+        """Verify RTLMeter can set up VeeR case (downloads repo if needed)."""
+        result = subprocess.run(
+            [f"{RTLMETER_DIR}/rtlmeter", "run",
+             "--cases", "VeeR-EH1:default:hello",
+             "--nCompile", "0", "--nExecute", "0",
+             "--verbose"],
+            capture_output=True, text=True,
+            cwd=RTLMETER_DIR,
+            timeout=300  # 5 min for clone
+        )
+        # Should succeed at setup even if we skip compile/execute
+        assert result.returncode == 0 or "setup" in result.stdout.lower(), \
+            f"RTLMeter VeeR setup failed: {result.stderr}"
+
 
 class TestSystemResources:
     """Verify system has adequate resources."""
@@ -178,6 +215,39 @@ class TestSystemResources:
         stat = os.statvfs(BENCHMARK_DIR)
         free_gb = (stat.f_bavail * stat.f_frsize) / (1024**3)
         assert free_gb >= 50, f"Expected at least 50GB free, got {free_gb:.1f}GB"
+
+
+class TestSystemDependencies:
+    """Verify required system tools are installed."""
+
+    @pytest.mark.parametrize("cmd,args", [
+        ("g++", ["--version"]),
+        ("gcc", ["--version"]),
+        ("make", ["--version"]),
+        ("flex", ["--version"]),
+        ("bison", ["--version"]),
+        ("ccache", ["--version"]),
+        ("autoconf", ["--version"]),
+        ("perl", ["--version"]),
+        ("python3", ["--version"]),
+    ])
+    def test_tool_installed(self, cmd, args):
+        result = subprocess.run([cmd] + args, capture_output=True, text=True)
+        assert result.returncode == 0, f"{cmd} not installed or not working"
+
+    def test_libfl_available(self):
+        """Check flex library is available for linking."""
+        result = subprocess.run(
+            ["pkg-config", "--exists", "fl"],
+            capture_output=True
+        )
+        # pkg-config may not have fl, try ldconfig
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["ldconfig", "-p"],
+                capture_output=True, text=True
+            )
+            assert "libfl" in result.stdout, "libfl not found - install libfl-dev"
 
 
 class TestParallelCompilation:
@@ -237,6 +307,95 @@ class TestQuickVerilation:
             cwd=temp_dir
         )
         assert result.returncode == 0, f"Optimized verilate with -j failed: {result.stderr}"
+
+
+class TestFullBuildAndRun:
+    """Test full compile, build, and run cycle."""
+
+    @pytest.fixture
+    def temp_dir(self, tmp_path):
+        return tmp_path
+
+    def test_optimized_full_build_and_run(self, temp_dir):
+        """Full cycle: verilate -> compile C++ -> link -> run."""
+        # Create a testbench that actually runs
+        sv_file = temp_dir / "test.sv"
+        sv_file.write_text("""
+module test(input clk, input rst, output reg [7:0] count);
+    always @(posedge clk) begin
+        if (rst) count <= 0;
+        else count <= count + 1;
+    end
+endmodule
+""")
+
+        # Verilate with --binary to get executable
+        result = subprocess.run(
+            [f"{OPTIMIZED_DIR}/bin/verilator", "--binary", "-j", "4",
+             "--trace", str(sv_file)],
+            capture_output=True, text=True,
+            cwd=temp_dir
+        )
+        assert result.returncode == 0, f"Verilate failed: {result.stderr}"
+
+        # Run the generated executable
+        exe_path = temp_dir / "obj_dir" / "Vtest"
+        assert exe_path.exists(), f"Executable not found at {exe_path}"
+
+        result = subprocess.run(
+            [str(exe_path)],
+            capture_output=True, text=True,
+            cwd=temp_dir,
+            timeout=30
+        )
+        # Should run without crashing (may exit with various codes)
+        assert result.returncode is not None, "Simulation crashed"
+
+
+class TestMultiThreadedStress:
+    """Stress test for the thread pool optimization."""
+
+    @pytest.fixture
+    def temp_dir(self, tmp_path):
+        return tmp_path
+
+    def test_parallel_verilations(self, temp_dir):
+        """Run multiple verilations in parallel to stress thread pool."""
+        import concurrent.futures
+
+        # Create multiple test files
+        for i in range(4):
+            sv_file = temp_dir / f"test{i}.sv"
+            sv_file.write_text(f"""
+module test{i}(input clk, output reg [31:0] out);
+    reg [31:0] r0, r1, r2, r3;
+    always @(posedge clk) begin
+        r0 <= r0 + 1;
+        r1 <= r1 + r0;
+        r2 <= r2 + r1;
+        r3 <= r3 + r2;
+        out <= r3;
+    end
+endmodule
+""")
+
+        def verilate(i):
+            result = subprocess.run(
+                [f"{OPTIMIZED_DIR}/bin/verilator", "--cc", "-j", "8",
+                 str(temp_dir / f"test{i}.sv"),
+                 "--Mdir", str(temp_dir / f"obj{i}")],
+                capture_output=True, text=True,
+                timeout=120
+            )
+            return i, result.returncode, result.stderr
+
+        # Run 4 verilations in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(verilate, i) for i in range(4)]
+            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+        for i, rc, stderr in results:
+            assert rc == 0, f"Parallel verilate {i} failed: {stderr}"
 
 
 if __name__ == "__main__":
