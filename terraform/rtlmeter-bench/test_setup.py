@@ -191,22 +191,23 @@ class TestRTLMeterBenchmarkCase:
 
 
 class TestSystemResources:
-    """Verify system has adequate resources."""
+    """Verify system has adequate resources for c8i.metal-48xl."""
 
     def test_cpu_count(self):
+        """c8i.metal-48xl has 96 vCPUs."""
         cpu_count = os.cpu_count()
         assert cpu_count is not None
-        assert cpu_count >= 16, f"Expected at least 16 CPUs, got {cpu_count}"
+        assert cpu_count >= 90, f"Expected at least 90 CPUs (c8i.metal-48xl has 96), got {cpu_count}"
 
     def test_memory_available(self):
-        """Check at least 32GB RAM available."""
+        """c8i.metal-48xl has 384GB RAM."""
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
                     # Value is in kB
                     mem_kb = int(line.split()[1])
                     mem_gb = mem_kb / (1024 * 1024)
-                    assert mem_gb >= 32, f"Expected at least 32GB RAM, got {mem_gb:.1f}GB"
+                    assert mem_gb >= 380, f"Expected at least 380GB RAM (c8i.metal-48xl has 384GB), got {mem_gb:.1f}GB"
                     return
         pytest.fail("Could not read memory info")
 
