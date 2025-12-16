@@ -131,10 +131,24 @@ def phase_provision() -> bool:
     print("  PHASE 2: INFRASTRUCTURE PROVISIONING")
     print("#" * 60)
 
-    return run_cmd(
+    success = run_cmd(
         ["terraform", "apply", "-auto-approve"],
         "Terraform apply (creating EC2 spot instance)"
     )
+
+    if success:
+        # Print dashboard URL for monitoring
+        result = subprocess.run(
+            ["terraform", "output", "-raw", "dashboard_url"],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            print("\n" + "=" * 60)
+            print("  CLOUDWATCH DASHBOARD (open in browser for live monitoring):")
+            print(f"  {result.stdout.strip()}")
+            print("=" * 60)
+
+    return success
 
 
 def phase_benchmark() -> bool:

@@ -56,7 +56,7 @@ def get_instance_metrics(instance_id: str) -> dict:
 
     metrics = {}
 
-    # Get CPU utilization
+    # Get CPU utilization (AWS/EC2 namespace)
     result = run_cmd([
         "aws", "cloudwatch", "get-metric-statistics",
         "--namespace", "AWS/EC2",
@@ -76,9 +76,9 @@ def get_instance_metrics(instance_id: str) -> dict:
             latest = max(datapoints, key=lambda x: x["Timestamp"])
             metrics["cpu"] = f"{latest['Average']:.1f}%"
         else:
-            metrics["cpu"] = "N/A"
+            metrics["cpu"] = "..."
 
-    # Get network in/out
+    # Get network in/out (AWS/EC2 namespace)
     for metric_name, key in [("NetworkIn", "net_in"), ("NetworkOut", "net_out")]:
         result = run_cmd([
             "aws", "cloudwatch", "get-metric-statistics",
@@ -103,7 +103,52 @@ def get_instance_metrics(instance_id: str) -> dict:
                 else:
                     metrics[key] = f"{bytes_val/1024:.1f}KB"
             else:
-                metrics[key] = "N/A"
+                metrics[key] = "..."
+
+    # Get memory used percent (RTLMeter namespace - from CloudWatch agent)
+    result = run_cmd([
+        "aws", "cloudwatch", "get-metric-statistics",
+        "--namespace", "RTLMeter",
+        "--metric-name", "mem_used_percent",
+        "--dimensions", f"Name=InstanceId,Value={instance_id}",
+        "--start-time", start_time.isoformat() + "Z",
+        "--end-time", end_time.isoformat() + "Z",
+        "--period", "60",
+        "--statistics", "Average",
+        "--output", "json"
+    ], check=False)
+
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        datapoints = data.get("Datapoints", [])
+        if datapoints:
+            latest = max(datapoints, key=lambda x: x["Timestamp"])
+            metrics["mem"] = f"{latest['Average']:.1f}%"
+        else:
+            metrics["mem"] = "..."
+
+    # Get disk used percent (RTLMeter namespace - from CloudWatch agent)
+    result = run_cmd([
+        "aws", "cloudwatch", "get-metric-statistics",
+        "--namespace", "RTLMeter",
+        "--metric-name", "disk_used_percent",
+        "--dimensions", f"Name=InstanceId,Value={instance_id}",
+        "Name=path,Value=/", "Name=fstype,Value=ext4",
+        "--start-time", start_time.isoformat() + "Z",
+        "--end-time", end_time.isoformat() + "Z",
+        "--period", "60",
+        "--statistics", "Average",
+        "--output", "json"
+    ], check=False)
+
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        datapoints = data.get("Datapoints", [])
+        if datapoints:
+            latest = max(datapoints, key=lambda x: x["Timestamp"])
+            metrics["disk"] = f"{latest['Average']:.1f}%"
+        else:
+            metrics["disk"] = "..."
 
     return metrics
 
@@ -112,9 +157,10 @@ def print_instance_status(instance_id: str) -> None:
     """Print current instance status and metrics."""
     metrics = get_instance_metrics(instance_id)
     status_line = (
-        f"[EC2 Status] CPU: {metrics.get('cpu', 'N/A')} | "
-        f"Net In: {metrics.get('net_in', 'N/A')} | "
-        f"Net Out: {metrics.get('net_out', 'N/A')}"
+        f"[EC2] CPU: {metrics.get('cpu', '...')} | "
+        f"RAM: {metrics.get('mem', '...')} | "
+        f"Disk: {metrics.get('disk', '...')} | "
+        f"Net: {metrics.get('net_in', '...')}/{metrics.get('net_out', '...')}"
     )
     print(f"\r{status_line}", end="", flush=True)
 
@@ -203,6 +249,34 @@ def setup_instance(instance_id: str) -> None:
         "git perl python3 python3-pip make autoconf g++ flex bison ccache "
         "libgoogle-perftools-dev numactl perl-doc libfl2 libfl-dev zlib1g zlib1g-dev "
         "help2man awscli",
+        # Install CloudWatch agent for memory/disk metrics
+        "wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb",
+        "sudo dpkg -i amazon-cloudwatch-agent.deb",
+        # Configure CloudWatch agent for memory and disk metrics
+        """sudo tee /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWCONFIG'
+{
+  "metrics": {
+    "namespace": "RTLMeter",
+    "metrics_collected": {
+      "mem": {
+        "measurement": ["mem_used_percent", "mem_available"],
+        "metrics_collection_interval": 60
+      },
+      "disk": {
+        "measurement": ["disk_used_percent", "disk_free"],
+        "resources": ["/"],
+        "metrics_collection_interval": 60
+      },
+      "diskio": {
+        "measurement": ["read_bytes", "write_bytes", "reads", "writes"],
+        "resources": ["*"],
+        "metrics_collection_interval": 60
+      }
+    }
+  }
+}
+CWCONFIG""",
+        "sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json",
         "pip3 install --user pyyaml tabulate scipy",
         "mkdir -p /home/ubuntu/benchmark",
         # Clone from fork (has both upstream tracking and our branch)

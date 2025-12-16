@@ -273,6 +273,108 @@ class TestAWSPreProvisioning:
 
         print("\n  Git branch 'optimize-threadpool-wait-cv' verified: exists")
 
+    def test_cloudwatch_access(self):
+        """Verify we can access CloudWatch metrics (for EC2 monitoring)."""
+        result = subprocess.run(
+            ["aws", "cloudwatch", "list-metrics",
+             "--namespace", "AWS/EC2",
+             "--metric-name", "CPUUtilization",
+             "--region", AWS_REGION,
+             "--max-items", "1"],
+            capture_output=True, text=True, check=False
+        )
+
+        assert result.returncode == 0, \
+            f"Cannot access CloudWatch metrics: {result.stderr}"
+
+        print("\n  CloudWatch access verified: can query EC2 metrics")
+
+    def test_terraform_has_cloudwatch_dashboard(self):
+        """Verify Terraform config includes CloudWatch dashboard."""
+        main_tf = os.path.join(TERRAFORM_DIR, "main.tf")
+        with open(main_tf, encoding="utf-8") as f:
+            content = f.read()
+
+        assert "aws_cloudwatch_dashboard" in content, \
+            "main.tf missing CloudWatch dashboard resource"
+
+        assert "RTLMeter-Benchmark" in content, \
+            "CloudWatch dashboard should be named RTLMeter-Benchmark"
+
+        # Verify dashboard includes key metrics
+        assert "CPUUtilization" in content, \
+            "Dashboard should include CPU metrics"
+        assert "mem_used_percent" in content, \
+            "Dashboard should include memory metrics"
+        assert "disk_used_percent" in content, \
+            "Dashboard should include disk metrics"
+        assert "NetworkIn" in content, \
+            "Dashboard should include network metrics"
+
+        print("\n  CloudWatch dashboard verified: CPU, RAM, Disk, Network")
+
+    def test_terraform_outputs_dashboard_url(self):
+        """Verify Terraform outputs the dashboard URL."""
+        outputs_tf = os.path.join(TERRAFORM_DIR, "outputs.tf")
+        with open(outputs_tf, encoding="utf-8") as f:
+            content = f.read()
+
+        assert "dashboard_url" in content, \
+            "outputs.tf missing dashboard_url output"
+
+        print("\n  Dashboard URL output verified")
+
+    def test_benchmark_installs_cloudwatch_agent(self):
+        """Verify benchmark.py installs CloudWatch agent for RAM/disk metrics."""
+        benchmark_py = os.path.join(TERRAFORM_DIR, "benchmark.py")
+        with open(benchmark_py, encoding="utf-8") as f:
+            content = f.read()
+
+        assert "amazon-cloudwatch-agent" in content, \
+            "benchmark.py should install CloudWatch agent"
+
+        assert "mem_used_percent" in content, \
+            "CloudWatch agent config should include memory metrics"
+
+        assert "disk_used_percent" in content, \
+            "CloudWatch agent config should include disk metrics"
+
+        assert "diskio" in content, \
+            "CloudWatch agent config should include disk I/O metrics"
+
+        print("\n  CloudWatch agent setup verified: RAM, Disk, Disk I/O")
+
+    def test_all_regions_consistent(self):
+        """Verify all files use the same AWS region (us-east-2)."""
+        expected_region = "us-east-2"
+        files_to_check = [
+            ("variables.tf", r'default\s*=\s*"([^"]+)"'),  # First default
+            ("run.py", r'--region[",\s]+([a-z0-9-]+)'),
+            ("test_setup.py", r'AWS_REGION\s*=\s*"([^"]+)"'),
+        ]
+
+        found_regions = {}
+
+        for filename, pattern in files_to_check:
+            filepath = os.path.join(TERRAFORM_DIR, filename)
+            with open(filepath, encoding="utf-8") as f:
+                content = f.read()
+
+            matches = re.findall(pattern, content)
+            # Filter to only AWS region format
+            regions = [m for m in matches if re.match(r'^[a-z]{2}-[a-z]+-\d+$', m)]
+            if regions:
+                found_regions[filename] = regions[0]
+
+        # All found regions should match expected
+        for filename, region in found_regions.items():
+            assert region == expected_region, \
+                f"{filename} uses region '{region}', expected '{expected_region}'"
+
+        print(f"\n  All files verified: using {expected_region}")
+        for filename, region in found_regions.items():
+            print(f"    - {filename}: {region}")
+
 
 class TestDirectoryStructure:
     """Verify all required directories exist."""

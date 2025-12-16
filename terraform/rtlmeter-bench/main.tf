@@ -96,6 +96,115 @@ data "aws_subnet" "selected" {
   default_for_az    = true
 }
 
+# CloudWatch Dashboard for monitoring
+resource "aws_cloudwatch_dashboard" "benchmark" {
+  dashboard_name = "RTLMeter-Benchmark"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          title  = "CPU Utilization"
+          region = var.aws_region
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.benchmark.id]
+          ]
+          period = 60
+          stat   = "Average"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Memory Used %"
+          region = var.aws_region
+          metrics = [
+            ["RTLMeter", "mem_used_percent", "InstanceId", aws_instance.benchmark.id]
+          ]
+          period = 60
+          stat   = "Average"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Disk Used %"
+          region = var.aws_region
+          metrics = [
+            ["RTLMeter", "disk_used_percent", "InstanceId", aws_instance.benchmark.id, "path", "/", "fstype", "ext4"]
+          ]
+          period = 60
+          stat   = "Average"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Network I/O"
+          region = var.aws_region
+          metrics = [
+            ["AWS/EC2", "NetworkIn", "InstanceId", aws_instance.benchmark.id],
+            ["AWS/EC2", "NetworkOut", "InstanceId", aws_instance.benchmark.id]
+          ]
+          period = 60
+          stat   = "Sum"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Disk I/O (bytes)"
+          region = var.aws_region
+          metrics = [
+            ["RTLMeter", "diskio_read_bytes", "InstanceId", aws_instance.benchmark.id],
+            ["RTLMeter", "diskio_write_bytes", "InstanceId", aws_instance.benchmark.id]
+          ]
+          period = 60
+          stat   = "Sum"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Disk I/O (ops)"
+          region = var.aws_region
+          metrics = [
+            ["RTLMeter", "diskio_reads", "InstanceId", aws_instance.benchmark.id],
+            ["RTLMeter", "diskio_writes", "InstanceId", aws_instance.benchmark.id]
+          ]
+          period = 60
+          stat   = "Sum"
+        }
+      }
+    ]
+  })
+}
+
 # Spot EC2 instance
 resource "aws_instance" "benchmark" {
   ami                  = var.ami_id
