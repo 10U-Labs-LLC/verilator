@@ -11,6 +11,21 @@ provider "aws" {
   region = var.aws_region
 }
 
+# Find AZs where the instance type is available
+data "aws_ec2_instance_type_offerings" "available" {
+  filter {
+    name   = "instance-type"
+    values = [var.instance_type]
+  }
+
+  location_type = "availability-zone"
+}
+
+locals {
+  # Use explicit AZ if provided, otherwise pick first available AZ for the instance type
+  availability_zone = var.availability_zone != "" ? var.availability_zone : sort(data.aws_ec2_instance_type_offerings.available.locations)[0]
+}
+
 # IAM role for SSM access
 resource "aws_iam_role" "ssm_role" {
   name = "rtlmeter-bench-ssm-role"
@@ -90,6 +105,27 @@ resource "aws_iam_instance_profile" "ssm_profile" {
   role = aws_iam_role.ssm_role.name
 }
 
+# Look up latest Ubuntu 24.04 AMI
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+}
+
 # Look up default VPC
 data "aws_vpc" "default" {
   default = true
@@ -98,7 +134,7 @@ data "aws_vpc" "default" {
 # Look up subnet in the specified availability zone
 data "aws_subnet" "selected" {
   vpc_id            = data.aws_vpc.default.id
-  availability_zone = var.availability_zone
+  availability_zone = local.availability_zone
   default_for_az    = true
 }
 
@@ -213,7 +249,7 @@ resource "aws_cloudwatch_dashboard" "benchmark" {
 
 # Spot EC2 instance
 resource "aws_instance" "benchmark" {
-  ami                  = var.ami_id
+  ami                  = data.aws_ami.ubuntu.id
   instance_type        = var.instance_type
   iam_instance_profile = aws_iam_instance_profile.ssm_profile.name
   availability_zone    = var.availability_zone

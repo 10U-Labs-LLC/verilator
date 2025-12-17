@@ -11,19 +11,13 @@ variable "instance_type" {
 }
 
 variable "availability_zone" {
-  description = "Availability zone"
+  description = "Availability zone (defaults to region + 'a')"
   type        = string
-  default     = "us-east-2a"
-}
-
-variable "ami_id" {
-  description = "Ubuntu 24.04 AMI ID"
-  type        = string
-  default     = "ami-06e3c045d79fd65d9" # Ubuntu 24.04 in us-east-2
+  default     = "" # Empty means derive from region
 }
 
 variable "root_volume_size" {
   description = "Root volume size in GB"
   type        = number
-  default     = 100
+  default     = 200 # Extra headroom for long benchmarks
 }

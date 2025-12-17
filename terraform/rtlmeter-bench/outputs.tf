@@ -3,6 +3,16 @@ output "instance_id" {
   value       = aws_instance.benchmark.id
 }
 
+output "ami_id" {
+  description = "Ubuntu AMI ID (dynamically selected)"
+  value       = data.aws_ami.ubuntu.id
+}
+
+output "ami_name" {
+  description = "Ubuntu AMI name"
+  value       = data.aws_ami.ubuntu.name
+}
+
 output "public_ip" {
   description = "Public IP address (if assigned)"
   value       = aws_instance.benchmark.public_ip
