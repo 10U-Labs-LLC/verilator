@@ -320,21 +320,20 @@ def run_rtlmeter(instance_id: str, label: str, install_dir: str,
         # Key changes for proper V3ThreadPool measurement:
         # - Use 'cmark' case (longer-running benchmark, not short 'hello')
         # - Use --nExecute 3 for multiple samples (statistical confidence)
-        # - Use --workDir to enable rtlmeter compare between runs
+        # - Use --workRoot to specify work directory for rtlmeter compare
         # - Use --verilate-jobs N to control V3ThreadPool thread count
         #   (NOT --threads, which controls runtime VlThreadPool)
         # - Timeout 300s for longer cmark test
         f"./rtlmeter run --timeout 300 --verbose "
         f"--cases 'VeeR-EH1:default:cmark' "
-        f"--workDir '{work_dir}' "
+        f"--workRoot '{work_dir}' "
         f"--nExecute 3 "
         f"--compileArgs '--verilate-jobs {threads}'",
-        # Collate results
-        f"./rtlmeter collate --runName '{label}-t{threads}' --workDir '{work_dir}' "
+        # Collate results (work_dir is positional argument)
+        f"./rtlmeter collate '{work_dir}' --runName '{label}-t{threads}' "
         f"> /home/ubuntu/benchmark/results_{label}_t{threads}.json",
-        # Report verilate step (V3ThreadPool optimization affects compile-time threading)
-        f"./rtlmeter report --steps 'verilate' --metrics 'elapsed cpu' "
-        f"--workDir '{work_dir}'",
+        # Report verilate step (work_dir is positional argument)
+        f"./rtlmeter report --steps 'verilate' --metrics 'elapsed cpu' '{work_dir}'",
     ]
 
     output = ssm_run(instance_id, benchmark_commands, timeout=3600)

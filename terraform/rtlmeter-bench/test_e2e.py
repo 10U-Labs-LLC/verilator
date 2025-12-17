@@ -239,7 +239,7 @@ class TestStatisticalComparison:
 cd {rtlmeter_dir} &&
 rm -rf work-test-baseline &&
 export PATH={baseline_dir}/bin:$PATH &&
-./rtlmeter run --cases 'VeeR-EH1:default:cmark' --workDir work-test-baseline \
+./rtlmeter run --cases 'VeeR-EH1:default:cmark' --workRoot work-test-baseline \
     --nExecute 3 --compileArgs '--verilate-jobs 4' --timeout 300
 """
         require_ssm.run_check(cmd_baseline, timeout=900)
@@ -249,7 +249,7 @@ export PATH={baseline_dir}/bin:$PATH &&
 cd {rtlmeter_dir} &&
 rm -rf work-test-optimized &&
 export PATH={optimized_dir}/bin:$PATH &&
-./rtlmeter run --cases 'VeeR-EH1:default:cmark' --workDir work-test-optimized \
+./rtlmeter run --cases 'VeeR-EH1:default:cmark' --workRoot work-test-optimized \
     --nExecute 3 --compileArgs '--verilate-jobs 4' --timeout 300
 """
         require_ssm.run_check(cmd_optimized, timeout=900)
