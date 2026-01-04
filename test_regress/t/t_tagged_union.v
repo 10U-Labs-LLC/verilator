@@ -82,6 +82,34 @@ module t;
       TestClass Obj;
    } ClassType;
 
+   // Enum for testing enum members
+   typedef enum {RED, GREEN, BLUE} Color;
+
+   // Tagged union with real/shortreal members
+   typedef union tagged {
+      void      Invalid;
+      real      RealVal;
+      shortreal ShortRealVal;
+   } RealType;
+
+   // Tagged union with string member
+   typedef union tagged {
+      void   Invalid;
+      string StrVal;
+   } StringType;
+
+   // Tagged union with enum member
+   typedef union tagged {
+      void  Invalid;
+      Color ColorVal;
+   } EnumType;
+
+   // Tagged union with event member
+   typedef union tagged {
+      void  Invalid;
+      event EvtVal;
+   } EventType;
+
    VInt vi1, vi2;
    MultiType mt;
    ArrayType at;
@@ -89,6 +117,10 @@ module t;
    ChandleType cht;
    ClassType clt;
    TestClass obj;
+   RealType rt;
+   StringType st;
+   EnumType et;
+   EventType evt;
 
    initial begin
       // Test 1: Basic void member
@@ -206,6 +238,28 @@ module t;
       clt = tagged Invalid;
       clt = tagged Obj (obj);
       `checkh(clt.Obj.value, 42);
+
+      // Test 15: Real member
+      rt = tagged Invalid;
+      rt = tagged RealVal (3.14159);
+      if (rt.RealVal != 3.14159) $stop;
+
+      // Test 16: Shortreal member
+      rt = tagged ShortRealVal (2.5);
+      if (rt.ShortRealVal != 2.5) $stop;
+
+      // Test 17: String member
+      st = tagged Invalid;
+      st = tagged StrVal ("hello");
+      if (st.StrVal != "hello") $stop;
+
+      // Test 18: Enum member
+      et = tagged Invalid;
+      et = tagged ColorVal (GREEN);
+      if (et.ColorVal != GREEN) $stop;
+
+      // Test 19: Event member
+      evt = tagged Invalid;
 
       $write("*-* All Finished *-*\n");
       $finish;

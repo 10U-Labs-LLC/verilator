@@ -68,6 +68,34 @@ module t;
       TestClass Obj;
    } ClassType;
 
+   // Enum for testing enum members
+   typedef enum {RED, GREEN, BLUE} Color;
+
+   // Tagged union with real/shortreal members
+   typedef union tagged {
+      void      Invalid;
+      real      RealVal;
+      shortreal ShortRealVal;
+   } RealType;
+
+   // Tagged union with string member
+   typedef union tagged {
+      void   Invalid;
+      string StrVal;
+   } StringType;
+
+   // Tagged union with enum member
+   typedef union tagged {
+      void  Invalid;
+      Color ColorVal;
+   } EnumType;
+
+   // Tagged union with event member
+   typedef union tagged {
+      void  Invalid;
+      event EvtVal;
+   } EventType;
+
    VInt v;
    WideType wt;
    ArrayType at;
@@ -75,6 +103,10 @@ module t;
    ChandleType cht;
    ClassType clt;
    TestClass obj;
+   RealType rt;
+   StringType st;
+   EnumType et;
+   EventType evt;
    int result;
    bit [59:0] wide60_result;
    bit [89:0] wide90_result;
@@ -283,6 +315,87 @@ module t;
       else
          result = -1;
       `checkh(result, 42);
+
+      // Test 21: Real member if matching
+      rt = tagged Invalid;
+      result = 0;
+      if (rt matches tagged Invalid)
+         result = 1;
+      else
+         result = 2;
+      `checkh(result, 1);
+
+      rt = tagged RealVal (3.14159);
+      result = 0;
+      if (rt matches tagged RealVal .r) begin
+         if (r == 3.14159)
+            result = 1;
+         else
+            result = 2;
+      end else
+         result = -1;
+      `checkh(result, 1);
+
+      // Test 22: Shortreal member if matching
+      rt = tagged ShortRealVal (2.5);
+      result = 0;
+      if (rt matches tagged ShortRealVal .r) begin
+         if (r == 2.5)
+            result = 1;
+         else
+            result = 2;
+      end else
+         result = -1;
+      `checkh(result, 1);
+
+      // Test 23: String member if matching
+      st = tagged Invalid;
+      result = 0;
+      if (st matches tagged Invalid)
+         result = 1;
+      else
+         result = 2;
+      `checkh(result, 1);
+
+      st = tagged StrVal ("hello");
+      result = 0;
+      if (st matches tagged StrVal .s) begin
+         if (s == "hello")
+            result = 1;
+         else
+            result = 2;
+      end else
+         result = -1;
+      `checkh(result, 1);
+
+      // Test 24: Enum member if matching
+      et = tagged Invalid;
+      result = 0;
+      if (et matches tagged Invalid)
+         result = 1;
+      else
+         result = 2;
+      `checkh(result, 1);
+
+      et = tagged ColorVal (GREEN);
+      result = 0;
+      if (et matches tagged ColorVal .c) begin
+         if (c == GREEN)
+            result = 1;
+         else
+            result = 2;
+      end else
+         result = -1;
+      `checkh(result, 1);
+
+      // Test 25: Event member if matching
+      evt = tagged Invalid;
+      result = 0;
+      if (evt matches tagged Invalid)
+         result = 1;
+      else
+         result = 2;
+      `checkh(result, 1);
 
       $write("*-* All Finished *-*\n");
       $finish;
