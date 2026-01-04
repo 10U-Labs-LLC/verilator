@@ -7,6 +7,14 @@
 // Test tagged union declaration, expressions, and member access
 // IEEE 1800-2023 Sections 7.3.2, 11.9
 
+// Class for testing class references in tagged unions
+class TestClass;
+   int value;
+   function new(int v);
+      value = v;
+   endfunction
+endclass
+
 `define stop $stop
 `define checkh(gotv,expv) do if ((gotv) !== (expv)) begin $write("%%Error: %s:%0d:  got=%0x exp=%0x (%s !== %s)\n", `__FILE__,`__LINE__, (gotv), (expv), `"gotv`", `"expv`"); `stop; end while(0);
 
@@ -62,10 +70,25 @@ module t;
       } Jmp;
    } Instr;
 
+   // Tagged union with chandle member
+   typedef union tagged {
+      void    Invalid;
+      chandle Handle;
+   } ChandleType;
+
+   // Tagged union with class reference member
+   typedef union tagged {
+      void      Invalid;
+      TestClass Obj;
+   } ClassType;
+
    VInt vi1, vi2;
    MultiType mt;
    ArrayType at;
    Instr instr;
+   ChandleType cht;
+   ClassType clt;
+   TestClass obj;
 
    initial begin
       // Test 1: Basic void member
@@ -173,6 +196,16 @@ module t;
       instr = tagged Jmp (tagged JmpC '{cc:2'd3, addr:10'd100});
       `checkh(instr.Jmp.JmpC.cc, 2'd3);
       `checkh(instr.Jmp.JmpC.addr, 10'd100);
+
+      // Test 13: Chandle member
+      cht = tagged Invalid;
+      cht = tagged Handle (null);
+
+      // Test 14: Class reference member
+      obj = new(42);
+      clt = tagged Invalid;
+      clt = tagged Obj (obj);
+      `checkh(clt.Obj.value, 42);
 
       $write("*-* All Finished *-*\n");
       $finish;
