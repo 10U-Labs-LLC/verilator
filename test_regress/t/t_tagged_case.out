@@ -100,3 +100,4 @@
   172 |       case (clt) matches
       |                  ^~~~~~~
 %Error: Cannot continue
+        ... This fatal error may be caused by the earlier error(s); resolve those first.

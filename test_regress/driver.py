@@ -2435,10 +2435,9 @@ class VlTest:
                 if n:
                     l1o.append(line)
                     break  # Trunc rest
-                (line, n) = re.subn(r'Cannot continue.*', r"Cannot continue", line)
-                if n:
+                if re.search(r'This fatal error may be caused', line):
                     l1o.append(line)
-                    break  # Trunc rest
+                    break  # Trunc after "This fatal error" line
                 l1o.append(line)
             #
             l1s = l1o
