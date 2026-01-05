@@ -621,6 +621,7 @@ public:
             /* BIT:                       */ "BIT",
             /* BYTE:                      */ "BYTE",
             /* CHANDLE:                   */ "LONGINT",
+            /* CVOID:                     */ "",  // Should not be traced
             /* EVENT:                     */ "EVENT",
             /* INT:                       */ "INT",
             /* INTEGER:                   */ "INTEGER",
