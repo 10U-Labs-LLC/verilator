@@ -24,11 +24,11 @@
 VL_DEFINE_DEBUG_FUNCTIONS;
 
 //######################################################################
-// AssertDeFuture
+// AssertDeFutureVisitor
 // If any AstFuture, then move all non-future varrefs to be one cycle behind,
 // see IEEE 1800-2023 16.9.4.
 
-class AssertDeFuture final : public VNVisitor {
+class AssertDeFutureVisitor final : public VNVisitor {
     // STATE - across all visitors
     AstNodeModule* const m_modp;  // Module future is underneath
     const AstFuture* m_futurep;  // First AstFuture found
@@ -99,7 +99,7 @@ class AssertDeFuture final : public VNVisitor {
 
 public:
     // CONSTRUCTORS
-    explicit AssertDeFuture(AstNode* nodep, AstNodeModule* modp, unsigned pastNum)
+    explicit AssertDeFutureVisitor(AstNode* nodep, AstNodeModule* modp, unsigned pastNum)
         : m_modp{modp}
         , m_pastNum{pastNum} {
         // See if any Future before we process
@@ -112,7 +112,7 @@ public:
         visit(nodep);  // Nodep may get deleted
         // UINFOTREE(9, nodep, "", "defuture-ou");
     }
-    ~AssertDeFuture() = default;
+    ~AssertDeFutureVisitor() = default;
 };
 
 //######################################################################
@@ -394,7 +394,7 @@ class AssertVisitor final : public VNVisitor {
     void visitAssertionIterate(AstNodeCoverOrAssert* nodep, AstNode* failsp) {
         if (m_beginp && nodep->name() == "") nodep->name(m_beginp->name());
 
-        { AssertDeFuture{nodep->propp(), m_modp, m_modPastNum++}; }
+        { AssertDeFutureVisitor{nodep->propp(), m_modp, m_modPastNum++}; }
         iterateChildren(nodep);
 
         AstSenTree* const sentreep = nodep->sentreep();
@@ -595,6 +595,7 @@ class AssertVisitor final : public VNVisitor {
                     AstNodeExpr* propp = nullptr;
                     for (AstCaseItem* itemp = nodep->itemsp(); itemp;
                          itemp = VN_AS(itemp->nextp(), CaseItem)) {
+                        AstNodeExpr* itembitp = nullptr;
                         for (AstNodeExpr* icondp = itemp->condsp(); icondp;
                              icondp = VN_AS(icondp->nextp(), NodeExpr)) {
                             AstNodeExpr* onep;
@@ -612,17 +613,27 @@ class AssertVisitor final : public VNVisitor {
                                                        nodep->exprp()->cloneTreePure(false),
                                                        icondp->cloneTreePure(false));
                             }
+                            // OR together all conditions within the same case item
+                            if (onep) {
+                                if (itembitp) {
+                                    itembitp = new AstOr{icondp->fileline(), onep, itembitp};
+                                } else {
+                                    itembitp = onep;
+                                }
+                            }
+                        }
+                        if (itembitp) {
                             if (propp) {
-                                propp = new AstConcat{icondp->fileline(), onep, propp};
+                                propp = new AstConcat{itemp->fileline(), itembitp, propp};
                             } else {
-                                propp = onep;
+                                propp = itembitp;
                             }
                         }
                     }
                     // Empty case means no property
                     if (!propp) propp = new AstConst{nodep->fileline(), AstConst::BitFalse{}};
                     const bool allow_none = has_default || nodep->unique0Pragma();
-                    // The following assertion lools as below.
+                    // The following assertion looks as below.
                     // if (!$onehot(propp)) begin
                     //     if (propp == '0) begin if (!allow_none) $error("none match"); end
                     //     else $error("multiple match");
