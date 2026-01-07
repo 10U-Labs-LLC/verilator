@@ -1586,7 +1586,11 @@ public:
     enum en : uint8_t {
         TWOSTATE,  // Declared as 2-state (bit, byte, int, shortint, longint)
         FOURSTATE,  // Declared as 4-state, may have X/Z (logic, reg, integer, time)
-        FOURSTATE_TWOVALUE,  // Declared as 4-state but known to only have 0/1 values
+        // Declared as 4-state but known to only have 0/1 values.
+        // Candidates: $random, $urandom, $fgets, $fread, $fscanf, $sscanf return values,
+        // array .size() method results. Proper tracking requires expression-level analysis
+        // in Phase 4 (--four-state implementation).
+        FOURSTATE_TWOVALUE,
         _ENUM_MAX  // Leave last
     };
     enum en m_e;
