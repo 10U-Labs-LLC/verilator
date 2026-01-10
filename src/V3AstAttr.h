@@ -1574,59 +1574,6 @@ inline std::ostream& operator<<(std::ostream& os, const VSigning& rhs) {
 
 // ######################################################################
 
-// Tracks IEEE 1800-2023 2-state vs 4-state type properties.
-// Used to distinguish between:
-// - Types declared as 2-state (bit, byte, int, etc.) that can never hold X/Z
-// - Types declared as 4-state (logic, integer, time) that may hold X/Z
-// - Types declared as 4-state but known to only produce 2-state values (e.g., syscall outputs)
-// The distinction between FOURSTATE and FOURSTATE_TWOVALUE is needed because VPI/DPI
-// must treat declared 4-state types differently even if they never actually hold X/Z.
-class VFourstate final {
-public:
-    enum en : uint8_t {
-        TWOSTATE,  // Declared as 2-state (bit, byte, int, shortint, longint)
-        FOURSTATE,  // Declared as 4-state, may have X/Z (logic, reg, integer, time)
-        // Declared as 4-state but known to only have 0/1 values.
-        // Candidates: $random, $urandom, $fgets, $fread, $fscanf, $sscanf return values,
-        // array .size() method results. Proper tracking requires expression-level analysis
-        // in Phase 4 (--four-state implementation).
-        FOURSTATE_TWOVALUE,
-        _ENUM_MAX  // Leave last
-    };
-    enum en m_e;
-    const char* ascii() const {
-        static const char* const names[] = {"TWOSTATE", "FOURSTATE", "FOURSTATE_TWOVALUE"};
-        return names[m_e];
-    }
-    VFourstate()
-        : m_e{TWOSTATE} {}
-    // cppcheck-suppress noExplicitConstructor
-    constexpr VFourstate(en _e)
-        : m_e{_e} {}
-    static VFourstate fromBool(bool isFourstate) {  // Factory method
-        return isFourstate ? VFourstate{FOURSTATE} : VFourstate{TWOSTATE};
-    }
-    explicit VFourstate(int _e)
-        : m_e(static_cast<en>(_e)) {}  // Need () or GCC 4.8 false warning
-    constexpr operator en() const { return m_e; }
-    // Is the declared type 4-state? (for VPI/DPI purposes)
-    bool isDeclaredFourstate() const VL_MT_SAFE { return m_e != TWOSTATE; }
-    // Could the value actually contain X/Z?
-    bool mayHaveXZ() const VL_MT_SAFE { return m_e == FOURSTATE; }
-    // Is the type known to only have 2-state values (either declared or effective)?
-    bool isTwoValue() const VL_MT_SAFE { return m_e != FOURSTATE; }
-};
-constexpr bool operator==(const VFourstate& lhs, const VFourstate& rhs) {
-    return lhs.m_e == rhs.m_e;
-}
-constexpr bool operator==(const VFourstate& lhs, VFourstate::en rhs) { return lhs.m_e == rhs; }
-constexpr bool operator==(VFourstate::en lhs, const VFourstate& rhs) { return lhs == rhs.m_e; }
-inline std::ostream& operator<<(std::ostream& os, const VFourstate& rhs) {
-    return os << rhs.ascii();
-}
-
-// ######################################################################
-
 class VStrength final {
 public:
     enum en : uint8_t { HIGHZ, SMALL, MEDIUM, WEAK, LARGE, PULL, STRONG, SUPPLY };
