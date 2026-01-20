@@ -354,7 +354,7 @@ class RandSequenceVisitor final : public VNVisitor {
                         //     "case 2 / * N(a)  * /: {statement}; break;"
                         //     "case 1 / * N(a) - 1 * /: {statement}; break;"
                         uint32_t j = static_cast<uint32_t>(listStmts[proditemp].size());
-                        for (AstNodeStmt* iprodp : listStmts[proditemp]) {
+                        for (AstNodeStmt* const iprodp : listStmts[proditemp]) {
                             jIfp->addThensp(new AstIf{
                                 fl,
                                 new AstEq{fl, new AstConst{fl, AstConst::WidthedValue{}, 32, j},

@@ -4810,7 +4810,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
             }
         }
 
-        if (packedArrayDtp) { m_packedArrayDtp = packedArrayDtp; }
+        if (packedArrayDtp) m_packedArrayDtp = packedArrayDtp;
     }
     void visit(AstMemberSel* nodep) override {
         // checkNoDot not appropriate, can be under a dot
@@ -5414,7 +5414,7 @@ class LinkDotResolveVisitor final : public VNVisitor {
                               << nodep->name());
             m_ds.init(m_curSymp);
         }
-        if (ifaceCaptured && resolvedCapturedTypedef) { retireCapture("resolved"); }
+        if (ifaceCaptured && resolvedCapturedTypedef) retireCapture("resolved");
         iterateChildren(nodep);
     }
     void visit(AstRequireDType* nodep) override {

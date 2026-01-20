@@ -3230,6 +3230,83 @@ class WidthVisitor final : public VNVisitor {
         nodep->dtypep(nodep);
         UINFO(4, "dtWidthed " << nodep);
     }
+    // Process tagged union: compute tag metadata and set width
+    void processTaggedUnion(AstNodeUOrStructDType* nodep) {
+        AstUnionDType* const unionp = VN_AS(nodep, UnionDType);
+        int memberCount = 0;
+        int maxMemberWidth = 0;
+        bool hasDynamic = false;
+        for (AstMemberDType* itemp = nodep->membersp(); itemp;
+             itemp = VN_AS(itemp->nextp(), MemberDType)) {
+            itemp->tagIndex(memberCount++);
+            AstNodeDType* const dtp = itemp->subDTypep()->skipRefp();
+            // Check for void members
+            const bool isVoid = VN_IS(dtp, BasicDType)
+                                && VN_AS(dtp, BasicDType)->keyword() == VBasicDTypeKwd::CVOID;
+            // Check for types that require unpacked storage:
+            // - Dynamic types (real, string, chandle, class, event)
+            // - Unpacked arrays (cannot be bit-packed)
+            if (AstBasicDType* const bdtp = VN_CAST(dtp, BasicDType)) {
+                if (bdtp->keyword().isDynamicType()) hasDynamic = true;
+            }
+            if (VN_IS(dtp, ClassRefDType)) hasDynamic = true;
+            if (VN_IS(dtp, UnpackArrayDType)) hasDynamic = true;  // Unpacked arrays
+            // Void members contribute 0 to width
+            if (!isVoid) maxMemberWidth = std::max(maxMemberWidth, itemp->width());
+            if (itemp->isFourstate()) nodep->isFourstate(true);
+        }
+        // Compute tag bit width: ceil(log2(memberCount)), minimum 1 bit
+        const int tagBitWidth
+            = memberCount <= 1 ? 1 : V3Number::log2b(memberCount - 1) + 1;
+        unionp->tagBitWidth(tagBitWidth);
+        unionp->maxMemberWidth(maxMemberWidth);
+        unionp->hasDynamicMember(hasDynamic);
+        UINFO(5, "   Tagged union: " << memberCount << " members, tagBits=" << tagBitWidth
+                                     << " maxMemberW=" << maxMemberWidth
+                                     << " hasDynamic=" << hasDynamic << endl);
+
+        if (hasDynamic) {
+            // Tagged unions with dynamic types cannot be bit-packed
+            // Use struct storage instead (handled in V3EmitCHeaders)
+            nodep->packed(false);
+
+            // Create synthetic __Vtag member for unpacked tagged unions
+            // This member is inserted into the AST so it gets emitted normally
+            FileLine* const flp = nodep->fileline();
+            AstNodeDType* const tagDTypep = nodep->findUInt32DType();
+            AstMemberDType* const tagMemberp = new AstMemberDType{flp, "__Vtag", tagDTypep};
+            tagMemberp->tagIndex(-1);  // Mark as synthetic tag field
+            // Insert at front of member list so tag appears first in struct
+            AstMemberDType* const existingMembersp = nodep->membersp();
+            if (existingMembersp) existingMembersp->unlinkFrBackWithNext();
+            nodep->addMembersp(tagMemberp);
+            if (existingMembersp) tagMemberp->addNextHere(existingMembersp);
+
+            // Width is implementation-defined for unpacked unions
+            // Use a minimal width to satisfy later checks
+            nodep->widthForce(32, 32);  // Use 32-bit width for tag storage
+            nodep->doingWidth(false);
+            return;
+        }
+
+        // Packed tagged unions (no dynamic members)
+        // Per IEEE 1800-2023 7.3.2: Total width = tagBits + maxMemberWidth
+        nodep->packed(true);
+        // Set LSBs: all members share LSB 0 in the data portion
+        // Also propagate packed status to nested struct/union types
+        for (AstMemberDType* itemp = nodep->membersp(); itemp;
+             itemp = VN_AS(itemp->nextp(), MemberDType)) {
+            itemp->lsb(0);
+            // Anonymous struct/union members in tagged unions must also be packed
+            AstNodeDType* const dtp = itemp->subDTypep()->skipRefp();
+            if (AstNodeUOrStructDType* const structp = VN_CAST(dtp, NodeUOrStructDType)) {
+                if (!structp->packed()) structp->packed(true);
+            }
+        }
+        const int totalWidth = tagBitWidth + maxMemberWidth;
+        nodep->widthForce(totalWidth, totalWidth);
+        nodep->doingWidth(false);
+    }
     void visit(AstNodeUOrStructDType* nodep) override {
         if (nodep->doingWidth()) {  // Early exit if have circular parameter definition
             nodep->v3error("Struct's type is circular: " << nodep->prettyName());
@@ -3260,93 +3337,7 @@ class WidthVisitor final : public VNVisitor {
         nodep->isFourstate(false);
 
         // For tagged unions: compute tag metadata
-        if (isTaggedUnion) {
-            int memberCount = 0;
-            int maxMemberWidth = 0;
-            bool hasDynamic = false;
-            for (AstMemberDType* itemp = nodep->membersp(); itemp;
-                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
-                itemp->tagIndex(memberCount++);
-                AstNodeDType* const dtp = itemp->subDTypep()->skipRefp();
-                // Check for void members
-                const bool isVoid = VN_IS(dtp, BasicDType)
-                                    && VN_AS(dtp, BasicDType)->keyword() == VBasicDTypeKwd::CVOID;
-                // Check for types that require unpacked storage:
-                // - Dynamic types (real, string, chandle, class, event)
-                // - Unpacked arrays (cannot be bit-packed)
-                if (AstBasicDType* const bdtp = VN_CAST(dtp, BasicDType)) {
-                    const VBasicDTypeKwd kwd = bdtp->keyword();
-                    if (kwd == VBasicDTypeKwd::DOUBLE || kwd == VBasicDTypeKwd::STRING
-                        || kwd == VBasicDTypeKwd::CHANDLE || kwd == VBasicDTypeKwd::EVENT) {
-                        hasDynamic = true;
-                    }
-                }
-                if (VN_IS(dtp, ClassRefDType)) hasDynamic = true;
-                if (VN_IS(dtp, UnpackArrayDType)) hasDynamic = true;  // Unpacked arrays
-                // Void members contribute 0 to width
-                if (!isVoid) maxMemberWidth = std::max(maxMemberWidth, itemp->width());
-                if (itemp->isFourstate()) nodep->isFourstate(true);
-            }
-            // Compute tag bit width: ceil(log2(memberCount)), minimum 1 bit
-            int tagBitWidth = 1;
-            if (memberCount > 1) {
-                tagBitWidth = 0;
-                int temp = memberCount - 1;
-                while (temp > 0) {
-                    tagBitWidth++;
-                    temp >>= 1;
-                }
-            }
-            unionp->tagBitWidth(tagBitWidth);
-            unionp->maxMemberWidth(maxMemberWidth);
-            unionp->hasDynamicMember(hasDynamic);
-            UINFO(5, "   Tagged union: " << memberCount << " members, tagBits=" << tagBitWidth
-                                         << " maxMemberW=" << maxMemberWidth
-                                         << " hasDynamic=" << hasDynamic << endl);
-
-            if (hasDynamic) {
-                // Tagged unions with dynamic types cannot be bit-packed
-                // Use struct storage instead (handled in V3EmitCHeaders)
-                nodep->packed(false);
-
-                // Create synthetic __Vtag member for unpacked tagged unions
-                // This member is inserted into the AST so it gets emitted normally
-                FileLine* const flp = nodep->fileline();
-                AstNodeDType* const tagDTypep = nodep->findUInt32DType();
-                AstMemberDType* const tagMemberp = new AstMemberDType{flp, "__Vtag", tagDTypep};
-                tagMemberp->tagIndex(-1);  // Mark as synthetic tag field
-                // Insert at front of member list so tag appears first in struct
-                AstMemberDType* const existingMembersp = nodep->membersp();
-                if (existingMembersp) existingMembersp->unlinkFrBackWithNext();
-                nodep->addMembersp(tagMemberp);
-                if (existingMembersp) tagMemberp->addNextHere(existingMembersp);
-
-                // Width is implementation-defined for unpacked unions
-                // Use a minimal width to satisfy later checks
-                nodep->widthForce(32, 32);  // Use 32-bit width for tag storage
-                nodep->doingWidth(false);
-                return;
-            }
-
-            // Packed tagged unions (no dynamic members)
-            // Per IEEE 1800-2023 7.3.2: Total width = tagBits + maxMemberWidth
-            nodep->packed(true);
-            // Set LSBs: all members share LSB 0 in the data portion
-            // Also propagate packed status to nested struct/union types
-            for (AstMemberDType* itemp = nodep->membersp(); itemp;
-                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
-                itemp->lsb(0);
-                // Anonymous struct/union members in tagged unions must also be packed
-                AstNodeDType* const dtp = itemp->subDTypep()->skipRefp();
-                if (AstNodeUOrStructDType* const structp = VN_CAST(dtp, NodeUOrStructDType)) {
-                    if (!structp->packed()) structp->packed(true);
-                }
-            }
-            const int totalWidth = tagBitWidth + maxMemberWidth;
-            nodep->widthForce(totalWidth, totalWidth);
-            nodep->doingWidth(false);
-            return;
-        }
+        if (isTaggedUnion) { processTaggedUnion(nodep); return; }
 
         // Error checks for non-tagged unions
         for (AstMemberDType* itemp = nodep->membersp(); itemp;
@@ -5002,14 +4993,8 @@ class WidthVisitor final : public VNVisitor {
             return;
         }
         // Find the member by name
-        AstMemberDType* memberp = nullptr;
-        for (AstMemberDType* itemp = unionDTypep->membersp(); itemp;
-             itemp = VN_AS(itemp->nextp(), MemberDType)) {
-            if (itemp->name() == nodep->name()) {
-                memberp = itemp;
-                break;
-            }
-        }
+        AstMemberDType* const memberp
+            = VN_CAST(m_memberMap.findMember(unionDTypep, nodep->name()), MemberDType);
         if (!memberp) {
             VSpellCheck speller;
             for (AstMemberDType* itemp = unionDTypep->membersp(); itemp;
@@ -5017,10 +5002,9 @@ class WidthVisitor final : public VNVisitor {
                 speller.pushCandidate(itemp->name());
             }
             const string suggest = speller.bestCandidateMsg(nodep->name());
-            nodep->v3error(
-                "Tagged union member '"
-                << nodep->name() << "' not found in " << unionDTypep->prettyDTypeNameQ()
-                << (suggest.empty() ? "" : "\n" + nodep->fileline()->warnMore() + suggest));
+            nodep->v3error("Tagged union member " << nodep->prettyNameQ() << " not found in "
+                                                             << unionDTypep->prettyDTypeNameQ()
+                           << (suggest.empty() ? "" : "\n" + nodep->fileline()->warnMore() + suggest));
             nodep->dtypeSetBit();
             return;
         }
@@ -5033,11 +5017,11 @@ class WidthVisitor final : public VNVisitor {
         const bool isVoid = VN_IS(memberDType, BasicDType)
                             && VN_AS(memberDType, BasicDType)->keyword() == VBasicDTypeKwd::CVOID;
         if (isVoid && nodep->exprp()) {
-            nodep->v3error("Void tagged union member '" << nodep->name()
-                                                        << "' should not have an expression");
+            nodep->v3error("Void tagged union member " << nodep->prettyNameQ()
+                                                       << " should not have an expression");
         } else if (!isVoid && !nodep->exprp() && !inPatternContext) {
-            nodep->v3error("Non-void tagged union member '" << nodep->name()
-                                                            << "' requires an expression");
+            nodep->v3error("Non-void tagged union member " << nodep->prettyNameQ()
+                                                           << " requires an expression");
         }
         // Type-check the value expression against member type
         if (nodep->exprp() && !isVoid) {
@@ -5090,13 +5074,12 @@ class WidthVisitor final : public VNVisitor {
             auto updateVarInBegin
                 = [](AstBegin* beginp, const string& varName, AstNodeDType* dtypep) {
                       for (AstNode* bstmtp = beginp->stmtsp(); bstmtp; bstmtp = bstmtp->nextp()) {
-                          if (AstVar* const varp = VN_CAST(bstmtp, Var)) {
-                              if (varp->name() == varName) {
-                                  varp->dtypep(dtypep);
-                                  varp->didWidth(true);  // Prevent re-processing
-                                  return true;
-                              }
-                          }
+                          AstVar* const varp = VN_CAST(bstmtp, Var);
+                          if (!varp) continue;
+                          if (varp->name() != varName) continue;
+                          varp->dtypep(dtypep);
+                          varp->didWidth(true);  // Prevent re-processing
+                          return true;
                       }
                       return false;
                   };
@@ -5135,53 +5118,42 @@ class WidthVisitor final : public VNVisitor {
             // Look for pattern variable in tagged pattern
             if (AstTaggedPattern* const tagPatp = VN_CAST(nodep->patternp(), TaggedPattern)) {
                 // Find the union member by name
-                for (AstMemberDType* memberp = unionp->membersp(); memberp;
-                     memberp = VN_AS(memberp->nextp(), MemberDType)) {
-                    if (memberp->name() == tagPatp->name()) {
-                        // Found union member
-                        if (AstPatternVar* const patVarp
-                            = VN_CAST(tagPatp->patternp(), PatternVar)) {
-                            // Simple case: tagged Member .varname
-                            updatePatternVarType(patVarp->name(), memberp->subDTypep());
-                            patVarp->dtypep(memberp->subDTypep());
-                            patVarp->didWidth(true);
-                        } else if (AstPattern* const structPatp
-                                   = VN_CAST(tagPatp->patternp(), Pattern)) {
-                            // Struct pattern case: tagged Member '{field:.var, ...}
-                            // Member type should be a struct
-                            AstNodeDType* const memberDtp = memberp->subDTypep()->skipRefp();
-                            AstNodeUOrStructDType* const structDtp
-                                = VN_CAST(memberDtp, NodeUOrStructDType);
-                            if (structDtp) {
-                                // For each pattern member, find the struct field type
-                                for (AstPatMember* patMemp
-                                     = VN_CAST(structPatp->itemsp(), PatMember);
-                                     patMemp; patMemp = VN_CAST(patMemp->nextp(), PatMember)) {
-                                    // Get the pattern variable from lhssp
-                                    AstPatternVar* const innerPatVarp
-                                        = VN_CAST(patMemp->lhssp(), PatternVar);
-                                    if (innerPatVarp) {
-                                        // Find the struct field by name
-                                        const AstText* const keyTextp
-                                            = VN_CAST(patMemp->keyp(), Text);
-                                        if (keyTextp) {
-                                            for (AstMemberDType* fieldp = structDtp->membersp();
-                                                 fieldp;
-                                                 fieldp = VN_AS(fieldp->nextp(), MemberDType)) {
-                                                if (fieldp->name() == keyTextp->text()) {
-                                                    updatePatternVarType(innerPatVarp->name(),
-                                                                         fieldp->subDTypep());
-                                                    innerPatVarp->dtypep(fieldp->subDTypep());
-                                                    innerPatVarp->didWidth(true);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                AstMemberDType* const memberp
+                    = VN_CAST(m_memberMap.findMember(unionp, tagPatp->name()), MemberDType);
+                if (memberp) {
+                    // Found union member
+                    if (AstPatternVar* const patVarp
+                        = VN_CAST(tagPatp->patternp(), PatternVar)) {
+                        // Simple case: tagged Member .varname
+                        updatePatternVarType(patVarp->name(), memberp->subDTypep());
+                        patVarp->dtypep(memberp->subDTypep());
+                        patVarp->didWidth(true);
+                    } else if (AstPattern* const structPatp
+                               = VN_CAST(tagPatp->patternp(), Pattern)) {
+                        // Struct pattern case: tagged Member '{field:.var, ...}
+                        // Member type should be a struct
+                        AstNodeDType* const memberDtp = memberp->subDTypep()->skipRefp();
+                        AstNodeUOrStructDType* const structDtp
+                            = VN_CAST(memberDtp, NodeUOrStructDType);
+                        if (structDtp) {
+                            // For each pattern member, find the struct field type
+                            for (AstPatMember* patMemp
+                                 = VN_CAST(structPatp->itemsp(), PatMember);
+                                 patMemp; patMemp = VN_CAST(patMemp->nextp(), PatMember)) {
+                                AstPatternVar* const innerPatVarp
+                                    = VN_CAST(patMemp->lhssp(), PatternVar);
+                                if (!innerPatVarp) continue;
+                                const AstText* const keyTextp = VN_CAST(patMemp->keyp(), Text);
+                                if (!keyTextp) continue;
+                                AstMemberDType* const fieldp = VN_CAST(
+                                    m_memberMap.findMember(structDtp, keyTextp->text()),
+                                    MemberDType);
+                                if (!fieldp) continue;
+                                updatePatternVarType(innerPatVarp->name(), fieldp->subDTypep());
+                                innerPatVarp->dtypep(fieldp->subDTypep());
+                                innerPatVarp->didWidth(true);
                             }
                         }
-                        break;
                     }
                 }
             }
@@ -5189,72 +5161,61 @@ class WidthVisitor final : public VNVisitor {
             // Grammar creates TaggedExpr when pattern is '{...} with PatternVars
             else if (AstTaggedExpr* const tagExprp = VN_CAST(nodep->patternp(), TaggedExpr)) {
                 // Find the union member by name
-                for (AstMemberDType* memberp = unionp->membersp(); memberp;
-                     memberp = VN_AS(memberp->nextp(), MemberDType)) {
-                    if (memberp->name() == tagExprp->name()) {
-                        // Found union member - get its struct type
-                        AstNodeDType* const memberDtp = memberp->subDTypep()->skipRefp();
-                        AstNodeUOrStructDType* const structDtp
-                            = VN_CAST(memberDtp, NodeUOrStructDType);
-                        if (structDtp) {
-                            // Find PatternVars in ConsPackMember nodes
-                            // Structure: TaggedExpr -> ConsPackUOrStruct -> ConsPackMember
-                            AstConsPackUOrStruct* const structp
-                                = VN_CAST(tagExprp->exprp(), ConsPackUOrStruct);
-                            if (structp) {
-                                for (AstConsPackMember* cpm = structp->membersp(); cpm;
-                                     cpm = VN_CAST(cpm->nextp(), ConsPackMember)) {
-                                    // cpm->dtypep() is the MemberDType for the field
-                                    AstMemberDType* const fieldDtp
-                                        = VN_CAST(cpm->dtypep(), MemberDType);
-                                    // Find PatternVar inside rhsp (may be inside Extend)
-                                    AstNode* valuep = cpm->rhsp();
-                                    // Look through Extend nodes
-                                    while (AstExtend* extp = VN_CAST(valuep, Extend)) {
-                                        valuep = extp->lhsp();
-                                    }
-                                    if (AstPatternVar* const patVarp
-                                        = VN_CAST(valuep, PatternVar)) {
-                                        if (fieldDtp) {
-                                            // Update both the VAR and the PatternVar dtype
-                                            updatePatternVarType(patVarp->name(),
-                                                                 fieldDtp->subDTypep());
-                                            patVarp->dtypep(fieldDtp->subDTypep());
-                                            patVarp->didWidth(true);
-                                        }
-                                    }
+                AstMemberDType* const memberp
+                    = VN_CAST(m_memberMap.findMember(unionp, tagExprp->name()), MemberDType);
+                if (memberp) {
+                    // Found union member - get its struct type
+                    AstNodeDType* const memberDtp = memberp->subDTypep()->skipRefp();
+                    AstNodeUOrStructDType* const structDtp
+                        = VN_CAST(memberDtp, NodeUOrStructDType);
+                    if (structDtp) {
+                        // Find PatternVars in ConsPackMember nodes
+                        // Structure: TaggedExpr -> ConsPackUOrStruct -> ConsPackMember
+                        AstConsPackUOrStruct* const structp
+                            = VN_CAST(tagExprp->exprp(), ConsPackUOrStruct);
+                        if (structp) {
+                            for (AstConsPackMember* cpm = structp->membersp(); cpm;
+                                 cpm = VN_CAST(cpm->nextp(), ConsPackMember)) {
+                                // cpm->dtypep() is the MemberDType for the field
+                                AstMemberDType* const fieldDtp
+                                    = VN_CAST(cpm->dtypep(), MemberDType);
+                                // Find PatternVar inside rhsp (may be inside Extend)
+                                AstNode* valuep = cpm->rhsp();
+                                // Look through Extend nodes
+                                while (AstExtend* const extp = VN_CAST(valuep, Extend)) {
+                                    valuep = extp->lhsp();
                                 }
-                            }
-                            // Also handle Pattern with PatMember children
-                            // (inner matches may parse '{...} as Pattern not ConsPackUOrStruct)
-                            else if (AstPattern* const patternp
-                                     = VN_CAST(tagExprp->exprp(), Pattern)) {
-                                for (AstPatMember* patMemp
-                                     = VN_CAST(patternp->itemsp(), PatMember);
-                                     patMemp; patMemp = VN_CAST(patMemp->nextp(), PatMember)) {
-                                    AstPatternVar* const patVarp
-                                        = VN_CAST(patMemp->lhssp(), PatternVar);
-                                    if (patVarp) {
-                                        const AstText* const keyTextp
-                                            = VN_CAST(patMemp->keyp(), Text);
-                                        if (keyTextp) {
-                                            for (AstMemberDType* fieldp = structDtp->membersp();
-                                                 fieldp;
-                                                 fieldp = VN_AS(fieldp->nextp(), MemberDType)) {
-                                                if (fieldp->name() == keyTextp->text()) {
-                                                    updatePatternVarType(patVarp->name(),
-                                                                         fieldp->subDTypep());
-                                                    patVarp->dtypep(fieldp->subDTypep());
-                                                    patVarp->didWidth(true);
-                                                    break;
-                                                }
-                                            }
-                                        }
+                                if (AstPatternVar* const patVarp = VN_CAST(valuep, PatternVar)) {
+                                    if (fieldDtp) {
+                                        // Update both the VAR and the PatternVar dtype
+                                        updatePatternVarType(patVarp->name(),
+                                                             fieldDtp->subDTypep());
+                                        patVarp->dtypep(fieldDtp->subDTypep());
+                                        patVarp->didWidth(true);
                                     }
                                 }
                             }
                         }
-                        break;
+                        // Also handle Pattern with PatMember children
+                        // (inner matches may parse '{...} as Pattern not ConsPackUOrStruct)
+                        else if (AstPattern* const patternp
+                                 = VN_CAST(tagExprp->exprp(), Pattern)) {
+                            for (AstPatMember* patMemp = VN_CAST(patternp->itemsp(), PatMember);
+                                 patMemp; patMemp = VN_CAST(patMemp->nextp(), PatMember)) {
+                                AstPatternVar* const patVarp
+                                    = VN_CAST(patMemp->lhssp(), PatternVar);
+                                if (!patVarp) continue;
+                                const AstText* const keyTextp = VN_CAST(patMemp->keyp(), Text);
+                                if (!keyTextp) continue;
+                                AstMemberDType* const fieldp = VN_CAST(
+                                    m_memberMap.findMember(structDtp, keyTextp->text()),
+                                    MemberDType);
+                                if (!fieldp) continue;
+                                updatePatternVarType(patVarp->name(), fieldp->subDTypep());
+                                patVarp->dtypep(fieldp->subDTypep());
+                                patVarp->didWidth(true);
+                            }
+                        }
                     }
                 }
             }
@@ -5374,39 +5335,7 @@ class WidthVisitor final : public VNVisitor {
                 VL_DO_DANGLING(pushDeletep(nodep), nodep);
                 if (defaultp) VL_DO_DANGLING(pushDeletep(defaultp), defaultp);
             } else {
-                // In matches context: preserve Pattern but set dtypes on PatMembers
-                // V3Tagged needs the Pattern structure to generate pattern var assignments
-                if (auto* const vdtypep = VN_CAST(dtypep, NodeUOrStructDType)) {
-                    // Set dtype on each PatMember based on matching struct field
-                    // Handle both named patterns '{name:.var} and positional patterns '{.var}
-                    AstMemberDType* posMemp = vdtypep->membersp();
-                    for (AstPatMember* patp = VN_CAST(nodep->itemsp(), PatMember); patp;
-                         patp = VN_CAST(patp->nextp(), PatMember)) {
-                        AstMemberDType* matchedMemp = nullptr;
-                        if (const AstText* const textp = VN_CAST(patp->keyp(), Text)) {
-                            // Named pattern: '{name:.var} - find matching struct member by name
-                            for (AstMemberDType* memp = vdtypep->membersp(); memp;
-                                 memp = VN_AS(memp->nextp(), MemberDType)) {
-                                if (memp->name() == textp->text()) {
-                                    matchedMemp = memp;
-                                    break;
-                                }
-                            }
-                        } else if (posMemp) {
-                            // Positional pattern: '{.var} - match by position
-                            matchedMemp = posMemp;
-                            posMemp = VN_AS(posMemp->nextp(), MemberDType);
-                        }
-                        if (matchedMemp) {
-                            patp->dtypep(matchedMemp);
-                            // Also set dtype on lhssp (PatternVar) if present
-                            if (AstPatternVar* const patVarp
-                                = VN_CAST(patp->lhssp(), PatternVar)) {
-                                patVarp->dtypep(matchedMemp->subDTypep());
-                            }
-                        }
-                    }
-                }
+                patternMatches(nodep, dtypep);
                 if (defaultp) VL_DO_DANGLING(pushDeletep(defaultp), defaultp);
             }
         }
@@ -5799,6 +5728,34 @@ class WidthVisitor final : public VNVisitor {
         }
         return valuep;
     }
+    void patternMatches(AstPattern* nodep, AstNodeDType* dtypep) {
+        // In matches context: preserve Pattern but set dtypes on PatMembers
+        // V3Tagged needs the Pattern structure to generate pattern var assignments
+        AstNodeUOrStructDType* const vdtypep = VN_CAST(dtypep, NodeUOrStructDType);
+        if (!vdtypep) return;
+        // Set dtype on each PatMember based on matching struct field
+        // Handle both named patterns '{name:.var} and positional patterns '{.var}
+        AstMemberDType* posMemp = vdtypep->membersp();
+        for (AstPatMember* patp = VN_CAST(nodep->itemsp(), PatMember); patp;
+             patp = VN_CAST(patp->nextp(), PatMember)) {
+            AstMemberDType* matchedMemp = nullptr;
+            if (const AstText* const textp = VN_CAST(patp->keyp(), Text)) {
+                // Named pattern: '{name:.var} - find matching struct member by name
+                matchedMemp
+                    = VN_CAST(m_memberMap.findMember(vdtypep, textp->text()), MemberDType);
+            } else if (posMemp) {
+                // Positional pattern: '{.var} - match by position
+                matchedMemp = posMemp;
+                posMemp = VN_AS(posMemp->nextp(), MemberDType);
+            }
+            if (!matchedMemp) continue;
+            patp->dtypep(matchedMemp);
+            // Also set dtype on lhssp (PatternVar) if present
+            if (AstPatternVar* const patVarp = VN_CAST(patp->lhssp(), PatternVar)) {
+                patVarp->dtypep(matchedMemp->subDTypep());
+            }
+        }
+    }
 
     static void checkEventAssignment(const AstNodeAssign* const asgnp) {
         string unsupEvtAsgn;
@@ -6006,56 +5963,51 @@ class WidthVisitor final : public VNVisitor {
         iterateCheckBool(nodep, "If", nodep->condp(), BOTH);
     }
 
+    // Update pattern variable type for a tagged pattern in a case item
+    void updateCaseTaggedPatternVarType(AstUnionDType* unionp, AstTaggedPattern* tagPatp,
+                                        AstCaseItem* itemp) {
+        tagPatp->dtypep(unionp);
+        AstPatternVar* const patVarp = VN_CAST(tagPatp->patternp(), PatternVar);
+        if (!patVarp) return;
+        AstMemberDType* const memberp
+            = VN_CAST(m_memberMap.findMember(unionp, tagPatp->name()), MemberDType);
+        if (!memberp) return;
+        // Find the AstVar for this pattern variable in the case item's statements (inside Begin)
+        for (AstNode* stmtp = itemp->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            AstBegin* const beginp = VN_CAST(stmtp, Begin);
+            if (!beginp) continue;
+            for (AstNode* bstmtp = beginp->stmtsp(); bstmtp; bstmtp = bstmtp->nextp()) {
+                AstVar* const varp = VN_CAST(bstmtp, Var);
+                if (!varp) continue;
+                if (varp->name() != patVarp->name()) continue;
+                varp->dtypep(memberp->subDTypep());
+                return;
+            }
+        }
+    }
+    // Handle case matches: update pattern variable types based on union member types
+    void handleCaseMatches(AstCase* nodep) {
+        if (!nodep->caseMatches()) return;
+        if (!nodep->exprp()) return;
+        if (!nodep->exprp()->dtypep()) return;
+        AstNodeDType* const exprDType = nodep->exprp()->dtypep()->skipRefp();
+        AstUnionDType* const unionp = VN_CAST(exprDType, UnionDType);
+        if (!unionp || !unionp->isTagged()) return;
+        for (AstCaseItem* itemp = nodep->itemsp(); itemp;
+             itemp = VN_AS(itemp->nextp(), CaseItem)) {
+            for (AstNode* condp = itemp->condsp(); condp; condp = condp->nextp()) {
+                if (AstTaggedPattern* const tagPatp = VN_CAST(condp, TaggedPattern)) {
+                    updateCaseTaggedPatternVarType(unionp, tagPatp, itemp);
+                }
+            }
+        }
+    }
+
     void visit(AstCase* nodep) override {
         assertAtStatement(nodep);
         // Type check expression case item conditions and bodies
         userIterateAndNext(nodep->exprp(), WidthVP{CONTEXT_DET, PRELIM}.p());
-        // For case matches, update pattern variable types based on union member types
-        if (nodep->caseMatches() && nodep->exprp() && nodep->exprp()->dtypep()) {
-            AstNodeDType* const exprDType = nodep->exprp()->dtypep()->skipRefp();
-            if (AstUnionDType* const unionp = VN_CAST(exprDType, UnionDType)) {
-                if (unionp->isTagged()) {
-                    for (AstCaseItem* itemp = nodep->itemsp(); itemp;
-                         itemp = VN_AS(itemp->nextp(), CaseItem)) {
-                        for (AstNode* condp = itemp->condsp(); condp; condp = condp->nextp()) {
-                            if (AstTaggedPattern* const tagPatp = VN_CAST(condp, TaggedPattern)) {
-                                // Set tagged pattern's dtype to match the union
-                                tagPatp->dtypep(unionp);
-                                if (AstPatternVar* const patVarp
-                                    = VN_CAST(tagPatp->patternp(), PatternVar)) {
-                                    // Find the member by name
-                                    for (AstMemberDType* memberp = unionp->membersp(); memberp;
-                                         memberp = VN_AS(memberp->nextp(), MemberDType)) {
-                                        if (memberp->name() == tagPatp->name()) {
-                                            // Found member, now find the AstVar for this pattern
-                                            // variable in the case item's statements (inside
-                                            // Begin)
-                                            for (AstNode* stmtp = itemp->stmtsp(); stmtp;
-                                                 stmtp = stmtp->nextp()) {
-                                                if (AstBegin* const beginp
-                                                    = VN_CAST(stmtp, Begin)) {
-                                                    for (AstNode* bstmtp = beginp->stmtsp();
-                                                         bstmtp; bstmtp = bstmtp->nextp()) {
-                                                        if (AstVar* const varp
-                                                            = VN_CAST(bstmtp, Var)) {
-                                                            if (varp->name() == patVarp->name()) {
-                                                                varp->dtypep(memberp->subDTypep());
-                                                                break;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        handleCaseMatches(nodep);
         for (AstCaseItem *nextip, *itemp = nodep->itemsp(); itemp; itemp = nextip) {
             nextip = VN_AS(itemp->nextp(), CaseItem);  // Prelim may cause the node to get replaced
             userIterateAndNext(itemp->stmtsp(), nullptr);
@@ -6098,7 +6050,6 @@ class WidthVisitor final : public VNVisitor {
     void visit(AstRepeat* nodep) override { nodep->v3fatalSrc("'repeat' missed in LinkJump"); }
     void visit(AstNodeIf* nodep) override {
         assertAtStatement(nodep);
-        // UINFOTREE(1, nodep, "", "IfPre");
         // For if-matches, visit condition first to establish pattern variable types
         // before visiting the body that uses them
         if (VN_IS(nodep->condp(), Matches)) {
@@ -6108,9 +6059,8 @@ class WidthVisitor final : public VNVisitor {
         } else {
             userIterateAndNext(nodep->thensp(), nullptr);
             userIterateAndNext(nodep->elsesp(), nullptr);
-            iterateCheckBool(nodep, "If", nodep->condp(), BOTH);  // it's like an if() condition.
+            iterateCheckBool(nodep, "If", nodep->condp(), BOTH);
         }
-        // UINFOTREE(1, nodep, "", "IfOut");
     }
     void visit(AstExprStmt* nodep) override {
         userIterateAndNext(nodep->stmtsp(), nullptr);
