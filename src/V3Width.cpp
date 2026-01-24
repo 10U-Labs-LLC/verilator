@@ -5210,7 +5210,7 @@ class WidthVisitor final : public VNVisitor {
                                     // Find PatternVar inside rhsp (may be inside Extend)
                                     AstNode* valuep = cpm->rhsp();
                                     // Look through Extend nodes
-                                    while (AstExtend* extp = VN_CAST(valuep, Extend)) {
+                                    while (AstExtend* const extp = VN_CAST(valuep, Extend)) {
                                         valuep = extp->lhsp();
                                     }
                                     if (AstPatternVar* const patVarp
