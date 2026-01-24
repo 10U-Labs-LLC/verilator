@@ -126,6 +126,7 @@ public:
     virtual AstNodeDType* subDType2p() const VL_MT_STABLE { return nullptr; }
     virtual bool isAggregateType() const { return false; }
     virtual bool isFourstate() const;
+    virtual VFourstate fourstate() const;  // Default impl in V3AstNodes.cpp
     // Ideally an IEEE $typename
     virtual string prettyDTypeName(bool) const { return prettyTypeName(); }
     string prettyDTypeNameQ() const { return "'" + prettyDTypeName(false) + "'"; }
@@ -234,7 +235,7 @@ class AstNodeUOrStructDType VL_NOT_FINAL : public AstNodeDType {
     string m_name;  // Name from upper typedef, if any
     const int m_uniqueNum;
     bool m_packed;
-    bool m_isFourstate = false;  // V3Width computes
+    VFourstate m_fourstate;  // V3Width computes; V3FourState may update later
     bool m_constrainedRand = false;  // True if struct has constraint expression
 
 protected:
@@ -250,7 +251,7 @@ protected:
         , m_name{other.m_name}
         , m_uniqueNum{uniqueNumInc()}
         , m_packed{other.m_packed}
-        , m_isFourstate{other.m_isFourstate}
+        , m_fourstate{other.m_fourstate}
         , m_constrainedRand{false} {}
 
 public:
@@ -282,8 +283,11 @@ public:
     void packed(bool flag) { m_packed = flag; }
     // packed() but as don't support unpacked, presently all structs
     static bool packedUnsup() { return true; }
-    void isFourstate(bool flag) { m_isFourstate = flag; }
-    bool isFourstate() const override VL_MT_SAFE { return m_isFourstate; }
+    // Keep backward-compatible isFourstate() for existing code
+    bool isFourstate() const override VL_MT_SAFE { return m_fourstate != VFourstate::NO; }
+    // New accessors for three-state tracking
+    VFourstate fourstate() const override { return m_fourstate; }
+    void fourstate(VFourstate flag) { m_fourstate = flag; }
     static int lo() VL_MT_STABLE { return 0; }
     int hi() const VL_MT_STABLE {
         return dtypep()->width() - 1;
@@ -454,6 +458,10 @@ public:
     // (Slow) recurses - Width in bytes rounding up 1,2,4,8,12,...
     int widthTotalBytes() const override;
     bool isFourstate() const override { return keyword().isFourstate(); }
+    VFourstate fourstate() const override {
+        return keyword().isFourstate() ? VFourstate{VFourstate::MAYBE}
+                                       : VFourstate{VFourstate::NO};
+    }
     VBasicDTypeKwd keyword() const VL_MT_SAFE {  // Avoid using - use isSomething accessors instead
         return m.m_keyword;
     }

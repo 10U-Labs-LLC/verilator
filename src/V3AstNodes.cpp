@@ -942,6 +942,9 @@ bool AstNodeDType::similarDType(const AstNodeDType* samep) const {
 }
 
 bool AstNodeDType::isFourstate() const { return basicp() && basicp()->isFourstate(); }
+VFourstate AstNodeDType::fourstate() const {
+    return basicp() ? basicp()->fourstate() : VFourstate{VFourstate::NO};
+}
 
 class AstNodeDType::CTypeRecursed final {
 public:

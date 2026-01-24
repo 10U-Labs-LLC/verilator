@@ -1203,6 +1203,50 @@ constexpr bool operator==(VEdgeType::en lhs, const VEdgeType& rhs) { return lhs 
 
 // ######################################################################
 
+class VFourstate final {
+    // Tracks 4-state representation requirement for types
+    // V3Width marks types as NO or MAYBE based on declaration
+    // V3FourState later converts MAYBE -> YES or back to NO (downgraded)
+public:
+    enum en : uint8_t {
+        NO,  // Declared 2-state (bit, int, etc.) - can never be X/Z
+        MAYBE,  // Declared 4-state - V3FourState will decide representation
+        YES  // V3FourState determined this definitely needs 4-state
+    };
+    enum en m_e;
+    const char* ascii() const {
+        static const char* const names[] = {"NO", "MAYBE", "YES"};
+        return names[m_e];
+    }
+    VFourstate()
+        : m_e{NO} {}
+    // cppcheck-suppress noExplicitConstructor
+    constexpr VFourstate(en _e)
+        : m_e{_e} {}
+    explicit VFourstate(int _e)
+        : m_e(static_cast<en>(_e)) {}  // Need () or GCC 4.8 false warning
+    constexpr operator en() const { return m_e; }
+    // Combine two states (for struct member aggregation per IEEE)
+    // V3Width only uses NO and MAYBE; YES is set later by V3FourState
+    VFourstate operator|(VFourstate other) const {
+        if (m_e == YES || other.m_e == YES) return YES;
+        if (m_e == MAYBE || other.m_e == MAYBE) return MAYBE;
+        return NO;
+    }
+};
+constexpr bool operator==(const VFourstate& lhs, const VFourstate& rhs) {
+    return lhs.m_e == rhs.m_e;
+}
+constexpr bool operator==(const VFourstate& lhs, VFourstate::en rhs) { return lhs.m_e == rhs; }
+constexpr bool operator==(VFourstate::en lhs, const VFourstate& rhs) { return lhs == rhs.m_e; }
+constexpr bool operator!=(const VFourstate& lhs, const VFourstate& rhs) {
+    return lhs.m_e != rhs.m_e;
+}
+constexpr bool operator!=(const VFourstate& lhs, VFourstate::en rhs) { return lhs.m_e != rhs; }
+constexpr bool operator!=(VFourstate::en lhs, const VFourstate& rhs) { return lhs != rhs.m_e; }
+
+// ######################################################################
+
 class VFwdType final {
 public:
     enum en : uint8_t { NONE, ENUM, STRUCT, UNION, CLASS, INTERFACE_CLASS, GENERIC_INTERFACE };

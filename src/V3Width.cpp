@@ -3225,7 +3225,7 @@ class WidthVisitor final : public VNVisitor {
         if (!nodep->packed() && v3Global.opt.structsPacked()) nodep->packed(true);
         userIterateChildren(nodep, nullptr);  // First size all members
         nodep->dtypep(nodep);
-        nodep->isFourstate(false);
+        nodep->fourstate(VFourstate::NO);
         // Error checks
         for (AstMemberDType* itemp = nodep->membersp(); itemp;
              itemp = VN_AS(itemp->nextp(), MemberDType)) {
@@ -3261,7 +3261,7 @@ class WidthVisitor final : public VNVisitor {
             for (itemp = nodep->membersp(); itemp && itemp->nextp();
                  itemp = VN_AS(itemp->nextp(), MemberDType)) {}
             for (; itemp; itemp = VN_CAST(itemp->backp(), MemberDType)) {
-                if (itemp->isFourstate()) nodep->isFourstate(true);
+                nodep->fourstate(nodep->fourstate() | itemp->fourstate());
                 itemp->lsb(lsb);
                 if (VN_IS(nodep, UnionDType)) {
                     const int itemWidth = itemp->width();
