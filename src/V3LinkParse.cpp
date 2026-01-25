@@ -886,18 +886,13 @@ class LinkParseVisitor final : public VNVisitor {
         }
     }
     // Recursively find all pattern variables in a matches expression,
-    // including any nested matches in lhsp (for chained patterns) and guardp
+    // including any nested matches in guardp (for chained matches)
     void findPatternVarsInMatches(AstMatches* matchesp, std::vector<AstPatternVar*>& patVars) {
         if (!matchesp) return;
         // Find pattern variables in this matches' pattern
         findPatternVars(matchesp->patternp(), patVars);
-        // If lhsp is also a Matches, recursively search it (for chained patterns)
-        // e.g., in "expr matches pat1 &&& expr2 matches pat2", the outer matches'
-        // lhsp is an inner matches "expr matches pat1 &&& expr2"
-        if (AstMatches* const innerMatchesp = VN_CAST(matchesp->lhsp(), Matches)) {
-            findPatternVarsInMatches(innerMatchesp, patVars);
-        }
-        // If guardp is a Matches, recursively search it
+        // If guardp is a Matches (chained matches like "a matches b &&& c matches d"),
+        // recursively search it for pattern variables
         if (AstMatches* const guardMatchesp = VN_CAST(matchesp->guardp(), Matches)) {
             findPatternVarsInMatches(guardMatchesp, patVars);
         }
