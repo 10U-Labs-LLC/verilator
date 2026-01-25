@@ -5199,8 +5199,7 @@ class WidthVisitor final : public VNVisitor {
                         if (structDtp) {
                             // Handle Pattern with PatMember children for struct patterns
                             // in tagged expressions (e.g., tagged Add '{.r1, .r2, .rd})
-                            if (AstPattern* const patternp
-                                = VN_CAST(tagExprp->exprp(), Pattern)) {
+                            if (AstPattern* const patternp = VN_CAST(tagExprp->exprp(), Pattern)) {
                                 for (AstPatMember* patMemp
                                      = VN_CAST(patternp->itemsp(), PatMember);
                                      patMemp; patMemp = VN_CAST(patMemp->nextp(), PatMember)) {
