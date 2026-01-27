@@ -3246,10 +3246,6 @@ class WidthVisitor final : public VNVisitor {
         if (nodep->didWidthAndSet()) return;  // This node is a dtype & not both PRELIMed+FINALed
         nodep->doingWidth(true);
         UINFO(5, "   NODEUORS " << nodep);
-        // Check for tagged unions
-        if (const AstUnionDType* const unionp = VN_CAST(nodep, UnionDType)) {
-            if (unionp->isTagged()) { nodep->v3warn(E_UNSUPPORTED, "Unsupported: tagged union"); }
-        }
         // UINFOTREE(9, nodep, "", "class-in");
         if (!nodep->packed() && v3Global.opt.structsPacked()) nodep->packed(true);
         userIterateChildren(nodep, nullptr);  // First size all members
@@ -3261,6 +3257,10 @@ class WidthVisitor final : public VNVisitor {
             AstNodeDType* const dtp = itemp->subDTypep()->skipRefp();
             if (nodep->packed()
                 && !dtp->isIntegralOrPacked()
+                // Skip void members in tagged unions - they represent tag-only values
+                && !(VN_IS(nodep, UnionDType) && VN_CAST(nodep, UnionDType)->isTagged()
+                     && VN_IS(dtp, BasicDType)
+                     && VN_AS(dtp, BasicDType)->keyword() == VBasicDTypeKwd::CVOID)
                 // Historically lax:
                 && !v3Global.opt.structsPacked())
                 itemp->v3error("Unpacked data type "
@@ -4870,22 +4870,81 @@ class WidthVisitor final : public VNVisitor {
     }
 
     void visit(AstTaggedExpr* nodep) override {
-        // Tagged union expressions are currently unsupported
-        nodep->v3warn(E_UNSUPPORTED, "Unsupported: tagged union");
-        // Set a placeholder type to allow further processing
-        nodep->dtypeSetBit();
-        userIterateChildren(nodep, m_vup);
+        if (nodep->didWidthAndSet()) return;
+        // Get context type from parent (e.g., assignment LHS type)
+        AstNodeDType* const contextDtp = m_vup ? m_vup->dtypeNullp() : nullptr;
+        if (!contextDtp) {
+            nodep->v3error("Tagged expression requires a context type");
+            nodep->dtypeSetBit();
+            return;
+        }
+        // Validate context is a tagged union
+        AstNodeDType* const skipDtp = contextDtp->skipRefp();
+        AstUnionDType* const unionp = VN_CAST(skipDtp, UnionDType);
+        if (!unionp || !unionp->isTagged()) {
+            nodep->v3error("Tagged expression can only be used with tagged union type, got "
+                           << contextDtp->prettyDTypeNameQ());
+            nodep->dtypeSetBit();
+            if (nodep->exprp()) userIterateAndNext(nodep->exprp(), WidthVP{SELF, BOTH}.p());
+            return;
+        }
+        // Look up member by name
+        AstMemberDType* memberp = nullptr;
+        VSpellCheck speller;
+        for (AstMemberDType* itemp = unionp->membersp(); itemp;
+             itemp = VN_AS(itemp->nextp(), MemberDType)) {
+            speller.pushCandidate(itemp->prettyName());
+            if (itemp->name() == nodep->name()) {
+                memberp = itemp;
+                break;
+            }
+        }
+        if (!memberp) {
+            const string suggest = speller.bestCandidateMsg(nodep->prettyName());
+            nodep->v3error("Tagged union member '" << nodep->name() << "' not found in "
+                                                   << unionp->prettyDTypeNameQ() << suggest);
+            nodep->dtypeSetBit();
+            return;
+        }
+        // Check void/non-void consistency
+        const bool isVoid
+            = VN_IS(memberp->subDTypep()->skipRefp(), BasicDType)
+              && VN_AS(memberp->subDTypep()->skipRefp(), BasicDType)->keyword()
+                     == VBasicDTypeKwd::CVOID;
+        if (isVoid && nodep->exprp()) {
+            nodep->v3error("Void tagged union member '" << nodep->name()
+                                                        << "' should not have an expression");
+        }
+        if (!isVoid && !nodep->exprp()) {
+            nodep->v3error("Non-void tagged union member '" << nodep->name()
+                                                            << "' requires an expression");
+        }
+        // Set dtype to the tagged union type (V3Tagged expects this)
+        nodep->dtypep(contextDtp);
+        // Width the value expression against the member's type
+        if (nodep->exprp()) {
+            userIterateAndNext(nodep->exprp(), WidthVP{memberp->subDTypep(), BOTH}.p());
+        }
     }
     void visit(AstTaggedPattern* nodep) override {
-        // Tagged patterns are currently unsupported
-        nodep->v3warn(E_UNSUPPORTED, "Unsupported: tagged pattern");
-        nodep->dtypeSetBit();
+        if (nodep->didWidthAndSet()) return;
+        // Set dtype from context if available (the tagged union type)
+        if (m_vup && m_vup->dtypeNullp()) {
+            nodep->dtypep(m_vup->dtypep());
+        } else {
+            nodep->dtypeSetBit();
+        }
         userIterateChildren(nodep, m_vup);
     }
     void visit(AstPatternVar* nodep) override {
-        // Pattern variable bindings are currently unsupported
-        nodep->v3warn(E_UNSUPPORTED, "Unsupported: pattern variable");
-        nodep->dtypeSetBit();
+        if (nodep->didWidthAndSet()) return;
+        // Set dtype from context if available, otherwise 1-bit placeholder
+        // V3Tagged transformation will create the actual properly-typed variable
+        if (m_vup && m_vup->dtypeNullp()) {
+            nodep->dtypep(m_vup->dtypep());
+        } else {
+            nodep->dtypeSetBit();
+        }
     }
     void visit(AstPatternStar* nodep) override {
         // Pattern wildcards are currently unsupported
@@ -4893,11 +4952,20 @@ class WidthVisitor final : public VNVisitor {
         nodep->dtypeSetBit();
     }
     void visit(AstMatches* nodep) override {
-        // Matches operator is currently unsupported
-        nodep->v3warn(E_UNSUPPORTED, "Unsupported: matches operator");
+        if (nodep->didWidthAndSet()) return;
+        // Width the LHS expression (the value being matched)
+        userIterateAndNext(nodep->lhsp(), WidthVP{CONTEXT, PRELIM}.p());
+        // Pass LHS dtype to pattern for context
+        AstNodeDType* const lhsDtp = nodep->lhsp()->dtypep();
+        if (nodep->patternp()) {
+            userIterateAndNext(nodep->patternp(), WidthVP{lhsDtp, BOTH}.p());
+        }
+        // Width guard expression if present
+        if (nodep->guardp()) {
+            userIterateAndNext(nodep->guardp(), WidthVP{CONTEXT, PRELIM}.p());
+        }
         // Matches returns a boolean
         nodep->dtypeSetBit();
-        userIterateChildren(nodep, m_vup);
     }
 
     void visit(AstPattern* nodep) override {
