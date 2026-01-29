@@ -3306,16 +3306,15 @@ class WidthVisitor final : public VNVisitor {
             unionDtypep->maxMemberWidth(maxMemberW);
             unionDtypep->hasDynamicMember(hasDynamic);
             if (!nodep->packed()) {
-                AstMemberDType* const tagMemberp = new AstMemberDType{
-                    nodep->fileline(), "__Vtag", nodep->findUInt32DType()};
+                AstMemberDType* const tagMemberp
+                    = new AstMemberDType{nodep->fileline(), "__Vtag", nodep->findUInt32DType()};
                 tagMemberp->tagIndex(-1);
                 nodep->addMembersp(tagMemberp);
             }
         }
-        const bool isHardPackedUnion
-            = nodep->packed() && VN_IS(nodep, UnionDType)
-              && !VN_CAST(nodep, UnionDType)->isSoft()
-              && !VN_CAST(nodep, UnionDType)->isTagged();
+        const bool isHardPackedUnion = nodep->packed() && VN_IS(nodep, UnionDType)
+                                       && !VN_CAST(nodep, UnionDType)->isSoft()
+                                       && !VN_CAST(nodep, UnionDType)->isTagged();
 
         // Determine bit assignments and width
         if (VN_IS(nodep, UnionDType) || nodep->packed()) {
@@ -4954,10 +4953,9 @@ class WidthVisitor final : public VNVisitor {
             return;
         }
         // Check void/non-void consistency
-        const bool isVoid
-            = VN_IS(memberp->subDTypep()->skipRefp(), BasicDType)
-              && VN_AS(memberp->subDTypep()->skipRefp(), BasicDType)->keyword()
-                     == VBasicDTypeKwd::CVOID;
+        const bool isVoid = VN_IS(memberp->subDTypep()->skipRefp(), BasicDType)
+                            && VN_AS(memberp->subDTypep()->skipRefp(), BasicDType)->keyword()
+                                   == VBasicDTypeKwd::CVOID;
         if (isVoid && nodep->exprp()) {
             nodep->v3error("Void tagged union member '" << nodep->name()
                                                         << "' should not have an expression");
@@ -5874,7 +5872,8 @@ class WidthVisitor final : public VNVisitor {
         AstMatches* const matchesp = VN_CAST(nodep->condp(), Matches);
         if (matchesp && matchesp->guardp()) {
             // Guard case: V3LinkParse wraps the entire if in an outer begin with placeholder vars
-            // Use aboveLoopp() because backp() returns previous sibling (AstVar) when if is not first
+            // Use aboveLoopp() because backp() returns previous sibling (AstVar) when if is not
+            // first
             return VN_CAST(nodep->aboveLoopp(), Begin);
         }
         // Non-guard case: begin inside thensp (V3LinkParse puts it as first statement)
@@ -5892,7 +5891,8 @@ class WidthVisitor final : public VNVisitor {
                 const auto it = types.find(varp->name());
                 if (it != types.end()) {
                     varp->dtypep(it->second);
-                    // Mark as widthed to prevent visit(AstVar*) from overwriting with 1-bit subDTypep
+                    // Mark as widthed to prevent visit(AstVar*) from overwriting with 1-bit
+                    // subDTypep
                     varp->didWidth(true);
                 }
             }
@@ -5906,7 +5906,7 @@ class WidthVisitor final : public VNVisitor {
         std::map<string, AstNodeDType*> patVarTypes;
         collectPatternVarTypes(matchesp, patVarTypes);  // O(D) - descends into guardp for chained
         if (patVarTypes.empty()) return;
-        AstBegin* const beginp = findPlaceholderVarBegin(nodep);    // O(S)
+        AstBegin* const beginp = findPlaceholderVarBegin(nodep);  // O(S)
         if (beginp) applyPlaceholderVarTypes(beginp, patVarTypes);  // O(V*log M)
     }
 
