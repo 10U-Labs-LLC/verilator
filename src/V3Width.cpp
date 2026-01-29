@@ -4979,8 +4979,22 @@ class WidthVisitor final : public VNVisitor {
         // Set dtype to the tagged union type (V3Tagged expects this)
         nodep->dtypep(contextDtp);
         // Width the value expression against the member's type
+        // Use iterateCheckTyped to ensure type conversion (e.g., packed bits to string)
         if (nodep->exprp()) {
-            userIterateAndNext(nodep->exprp(), WidthVP{memberp->subDTypep(), BOTH}.p());
+            // For struct patterns inside tagged expressions, set dtypes directly without
+            // triggering visit(AstPattern*) transformation. V3Tagged handles transformation.
+            if (AstPattern* const structPatp = VN_CAST(nodep->exprp(), Pattern)) {
+                if (AstNodeUOrStructDType* const structDtp
+                    = VN_CAST(memberp->subDTypep()->skipRefp(), NodeUOrStructDType)) {
+                    setStructPatternVarDtypes(structPatp, structDtp);
+                } else {
+                    iterateCheckTyped(nodep, "Tagged member value", nodep->exprp(),
+                                      memberp->subDTypep(), BOTH);
+                }
+            } else {
+                iterateCheckTyped(nodep, "Tagged member value", nodep->exprp(),
+                                  memberp->subDTypep(), BOTH);
+            }
         }
     }
     void visit(AstTaggedPattern* nodep) override {
@@ -5023,7 +5037,18 @@ class WidthVisitor final : public VNVisitor {
         }
         // Pass member dtype to sub-pattern (pattern variable gets correct type)
         if (nodep->patternp()) {
-            userIterateAndNext(nodep->patternp(), WidthVP{memberp->subDTypep(), BOTH}.p());
+            // For struct patterns inside tagged patterns, set dtypes directly without
+            // triggering visit(AstPattern*) transformation. V3Tagged handles transformation.
+            if (AstPattern* const structPatp = VN_CAST(nodep->patternp(), Pattern)) {
+                if (AstNodeUOrStructDType* const structDtp
+                    = VN_CAST(memberp->subDTypep()->skipRefp(), NodeUOrStructDType)) {
+                    setStructPatternVarDtypes(structPatp, structDtp);
+                } else {
+                    userIterateAndNext(nodep->patternp(), WidthVP{memberp->subDTypep(), BOTH}.p());
+                }
+            } else {
+                userIterateAndNext(nodep->patternp(), WidthVP{memberp->subDTypep(), BOTH}.p());
+            }
         }
     }
     void visit(AstPatternVar* nodep) override {
@@ -5056,6 +5081,11 @@ class WidthVisitor final : public VNVisitor {
         }
         // Width guard expression if present
         if (nodep->guardp()) {
+            // Guard may use pattern vars - update placeholder var dtypes first
+            // Find parent if-statement and update its placeholder vars
+            if (AstNodeIf* const ifp = VN_CAST(nodep->aboveLoopp(), NodeIf)) {
+                updateIfMatchesPlaceholderVars(ifp);
+            }
             userIterateAndNext(nodep->guardp(), WidthVP{CONTEXT_DET, PRELIM}.p());
         }
         // Matches returns a boolean
@@ -5759,6 +5789,41 @@ class WidthVisitor final : public VNVisitor {
         iterateCheckBool(nodep, "If", nodep->condp(), BOTH);
     }
 
+    // Set dtypes on PatternVars inside struct patterns without triggering visit(AstPattern*)
+    // transformation. Used for case-matches where V3Tagged handles transformation later.
+    void setStructPatternVarDtypes(AstPattern* patp, AstNodeUOrStructDType* structDtp) {
+        if (!patp || !structDtp) return;
+        // Build member name->dtype map
+        std::map<string, AstNodeDType*> memberDtypes;
+        for (AstMemberDType* memp = structDtp->membersp(); memp;
+             memp = VN_AS(memp->nextp(), MemberDType)) {
+            memberDtypes[memp->name()] = memp->subDTypep();
+        }
+        // Iterate PatMember items and set dtypes on PatternVars
+        for (AstPatMember* itemp = VN_CAST(patp->itemsp(), PatMember); itemp;
+             itemp = VN_CAST(itemp->nextp(), PatMember)) {
+            AstNodeDType* memberDtp = nullptr;
+            if (AstText* const keyp = VN_CAST(itemp->keyp(), Text)) {
+                const auto it = memberDtypes.find(keyp->text());
+                if (it != memberDtypes.end()) memberDtp = it->second;
+            }
+            if (!memberDtp) continue;
+            // Set dtype on PatternVar if present
+            if (AstPatternVar* const pvp = VN_CAST(itemp->lhssp(), PatternVar)) {
+                pvp->dtypep(memberDtp);
+            } else if (AstTaggedPattern* const tp = VN_CAST(itemp->lhssp(), TaggedPattern)) {
+                // Nested tagged pattern - recurse
+                userIterateAndNext(tp, WidthVP{memberDtp, BOTH}.p());
+            } else if (AstPattern* const nestedp = VN_CAST(itemp->lhssp(), Pattern)) {
+                // Nested struct pattern - recurse
+                if (AstNodeUOrStructDType* const nestedStructDtp
+                    = VN_CAST(memberDtp->skipRefp(), NodeUOrStructDType)) {
+                    setStructPatternVarDtypes(nestedp, nestedStructDtp);
+                }
+            }
+        }
+    }
+
     // Targeted traversal: collect pattern var name->dtype from known node types.
     // Recursive dispatch on node type. O(D) where D = pattern nesting depth (typically 1-3).
     void collectPatternVarTypes(AstNode* nodep, std::map<string, AstNodeDType*>& types) {
@@ -5812,7 +5877,8 @@ class WidthVisitor final : public VNVisitor {
             if (AstBegin* const beginp = VN_CAST(stmtp, Begin)) return beginp;
         }
         // Guard case: if wrapped in outer begin (V3LinkParse wraps guarded if)
-        return VN_CAST(nodep->backp(), Begin);
+        // Use aboveLoopp() because backp() returns previous sibling (AstVar) when if is not first
+        return VN_CAST(nodep->aboveLoopp(), Begin);
     }
 
     // Helper: apply types to placeholder vars -- O(V * log M), 2 args
