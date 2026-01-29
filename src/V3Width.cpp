@@ -4926,6 +4926,27 @@ class WidthVisitor final : public VNVisitor {
         return false;
     }
 
+    // Helper: check if node is inside an if-matches condition
+    static bool isInIfMatchesCondition(AstNode* nodep) {
+        // Walk up parent chain to find Matches node that's a child of If
+        for (AstNode* parentp = nodep->backp(); parentp; parentp = parentp->backp()) {
+            if (AstMatches* const matchesp = VN_CAST(parentp, Matches)) {
+                // Check if this Matches is the condition of an If statement
+                if (AstIf* const ifp = VN_CAST(matchesp->backp(), If)) {
+                    return ifp->condp() == matchesp;
+                }
+            }
+            // Stop at statement boundaries
+            if (VN_IS(parentp, NodeStmt)) return false;
+        }
+        return false;
+    }
+
+    // Helper: check if node is in any pattern matching context (case/if matches)
+    static bool isInMatchesCondition(AstNode* nodep) {
+        return isInCaseMatchesCondition(nodep) || isInIfMatchesCondition(nodep);
+    }
+
     void visit(AstTaggedExpr* nodep) override {
         if (nodep->didWidthAndSet()) return;
         // Get context type from parent (e.g., assignment LHS type)
@@ -4962,7 +4983,7 @@ class WidthVisitor final : public VNVisitor {
             nodep->dtypeSetBit();  // Set placeholder dtype for error recovery
             return;  // Don't try to width expression against void type
         }
-        if (!isVoid && !nodep->exprp() && !isInCaseMatchesCondition(nodep)) {
+        if (!isVoid && !nodep->exprp() && !isInMatchesCondition(nodep)) {
             nodep->v3error("Non-void tagged union member '" << nodep->name()
                                                             << "' requires an expression");
         }
@@ -4975,7 +4996,7 @@ class WidthVisitor final : public VNVisitor {
             // directly without triggering visit(AstPattern*) transformation.
             // V3Tagged handles transformation for case-matches patterns.
             // For RValue patterns (assignments), use normal visit(AstPattern*) flow.
-            if (isInCaseMatchesCondition(nodep)) {
+            if (isInMatchesCondition(nodep)) {
                 if (AstPattern* const structPatp = VN_CAST(nodep->exprp(), Pattern)) {
                     if (AstNodeUOrStructDType* const structDtp
                         = VN_CAST(memberp->subDTypep()->skipRefp(), NodeUOrStructDType)) {
