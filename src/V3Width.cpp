@@ -4947,25 +4947,9 @@ class WidthVisitor final : public VNVisitor {
             return;
         }
         // Look up member by name -- O(1) if map matches this union, else O(M) scan
-        AstMemberDType* memberp = nullptr;
-        if (m_taggedMemberMapUnionp == unionp && !m_taggedMemberMap.empty()) {
-            const auto it = m_taggedMemberMap.find(nodep->name());
-            if (it != m_taggedMemberMap.end()) memberp = it->second;
-        } else {
-            for (AstMemberDType* itemp = unionp->membersp(); itemp;
-                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
-                if (itemp->name() == nodep->name()) { memberp = itemp; break; }
-            }
-        }
+        AstMemberDType* const memberp = findTaggedMember(unionp, nodep->name());
         if (!memberp) {
-            VSpellCheck speller;
-            for (AstMemberDType* itemp = unionp->membersp(); itemp;
-                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
-                speller.pushCandidate(itemp->prettyName());
-            }
-            const string suggest = speller.bestCandidateMsg(nodep->prettyName());
-            nodep->v3error("Tagged union member '" << nodep->name() << "' not found in "
-                                                   << unionp->prettyDTypeNameQ() << suggest);
+            reportMemberNotFound(nodep, unionp, nodep->name());
             nodep->dtypeSetBit();
             return;
         }
@@ -5028,25 +5012,9 @@ class WidthVisitor final : public VNVisitor {
             return;
         }
         // O(1) lookup via m_taggedMemberMap when map matches this union, else O(M) scan
-        AstMemberDType* memberp = nullptr;
-        if (m_taggedMemberMapUnionp == unionp && !m_taggedMemberMap.empty()) {
-            const auto it = m_taggedMemberMap.find(nodep->name());
-            if (it != m_taggedMemberMap.end()) memberp = it->second;
-        } else {
-            for (AstMemberDType* itemp = unionp->membersp(); itemp;
-                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
-                if (itemp->name() == nodep->name()) { memberp = itemp; break; }
-            }
-        }
+        AstMemberDType* const memberp = findTaggedMember(unionp, nodep->name());
         if (!memberp) {
-            VSpellCheck speller;
-            for (AstMemberDType* itemp = unionp->membersp(); itemp;
-                 itemp = VN_AS(itemp->nextp(), MemberDType)) {
-                speller.pushCandidate(itemp->prettyName());
-            }
-            const string suggest = speller.bestCandidateMsg(nodep->prettyName());
-            nodep->v3error("Tagged union member '" << nodep->name() << "' not found in "
-                                                   << unionp->prettyDTypeNameQ() << suggest);
+            reportMemberNotFound(nodep, unionp, nodep->name());
             nodep->dtypeSetBit();
             return;
         }
@@ -5953,6 +5921,30 @@ class WidthVisitor final : public VNVisitor {
                 m_taggedMemberMap[itemp->name()] = itemp;
             }
         }
+    }
+    // Helper: look up member in tagged union - O(1) if cache matches, else O(M)
+    AstMemberDType* findTaggedMember(AstUnionDType* unionp, const string& name) {
+        if (m_taggedMemberMapUnionp == unionp && !m_taggedMemberMap.empty()) {
+            const auto it = m_taggedMemberMap.find(name);
+            if (it != m_taggedMemberMap.end()) return it->second;
+            return nullptr;
+        }
+        for (AstMemberDType* itemp = unionp->membersp(); itemp;
+             itemp = VN_AS(itemp->nextp(), MemberDType)) {
+            if (itemp->name() == name) return itemp;
+        }
+        return nullptr;
+    }
+    // Helper: report "member not found" error with spell check suggestion - O(M)
+    void reportMemberNotFound(AstNode* nodep, AstUnionDType* unionp, const string& name) {
+        VSpellCheck speller;
+        for (AstMemberDType* itemp = unionp->membersp(); itemp;
+             itemp = VN_AS(itemp->nextp(), MemberDType)) {
+            speller.pushCandidate(itemp->prettyName());
+        }
+        const string suggest = speller.bestCandidateMsg(nodep->prettyName());
+        nodep->v3error("Tagged union member '" << name << "' not found in "
+                                               << unionp->prettyDTypeNameQ() << suggest);
     }
     // Helper: visit one case-matches item's conditions (single loop)
     void visitCaseMatchesItemConditions(AstCaseItem* itemp, AstNodeDType* exprDtp) {
