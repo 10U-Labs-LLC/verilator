@@ -221,11 +221,11 @@ class TaggedVisitor final : public VNVisitor {
 
         // Create the tag value positioned at MSB
         // tag_value << max_member_width
+        // Packed unions must have at least one non-void member for meaningful bit representation
+        UASSERT_OBJ(maxMemberWidth > 0, nodep, "Packed union must have non-void members");
         AstNodeExpr* tagValp = makeConst(fl, tagIndex, totalWidth);
-        if (maxMemberWidth > 0) {
-            tagValp = new AstShiftL{fl, tagValp, makeConst(fl, maxMemberWidth, 32)};
-            tagValp->dtypeSetBitSized(totalWidth, VSigning::UNSIGNED);
-        }
+        tagValp = new AstShiftL{fl, tagValp, makeConst(fl, maxMemberWidth, 32)};
+        tagValp->dtypeSetBitSized(totalWidth, VSigning::UNSIGNED);
 
         // Handle member value
         const bool isVoid = isVoidDType(memberp->subDTypep());
@@ -248,10 +248,9 @@ class TaggedVisitor final : public VNVisitor {
         // is computed as std::max() of all member widths
 
         // Extend value to total width for OR operation
-        if (maxMemberWidth < totalWidth) {
-            valuep = new AstExtend{fl, valuep, totalWidth};
-            valuep->dtypeSetBitSized(totalWidth, VSigning::UNSIGNED);
-        }
+        // totalWidth = maxMemberWidth + tagWidth, and tagWidth >= 1, so always need extend
+        valuep = new AstExtend{fl, valuep, totalWidth};
+        valuep->dtypeSetBitSized(totalWidth, VSigning::UNSIGNED);
 
         // Combine: tag | value
         AstNodeExpr* const resultp = new AstOr{fl, tagValp, valuep};
@@ -264,12 +263,13 @@ class TaggedVisitor final : public VNVisitor {
     AstUnionDType* getMatchesUnionType(AstMatches* matchesp) {
         AstNode* const patternp = matchesp->patternp();
         AstUnionDType* unionp = nullptr;
-        if (VN_IS(patternp, TaggedPattern) || VN_IS(patternp, TaggedExpr)) {
+        // Pattern can be TaggedPattern (normal case) or TaggedExpr (edge cases)
+        if (VN_IS(patternp, TaggedPattern) | VN_IS(patternp, TaggedExpr)) {
+            // V3Width ensures dtypep() is set; use & to avoid short-circuit
             if (patternp->dtypep()) {
                 unionp = VN_CAST(patternp->dtypep()->skipRefp(), UnionDType);
             }
         }
-        // V3Width ensures dtypep() is set, so unionp is always found above
         return unionp;
     }
 

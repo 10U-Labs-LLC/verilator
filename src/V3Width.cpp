@@ -4912,6 +4912,7 @@ class WidthVisitor final : public VNVisitor {
     }
 
     // Helper: check if node is inside a case-matches condition -- O(items in case)
+    // Returns false for TaggedExpr in regular assignments (not in case-matches)
     static bool isInCaseMatchesCondition(AstNode* nodep) {
         // Walk up parent chain to find CaseItem (handles nested tagged expressions)
         for (AstNode* parentp = nodep->backp(); parentp; parentp = parentp->backp()) {
@@ -4922,13 +4923,14 @@ class WidthVisitor final : public VNVisitor {
                 if (!casep) return false;
                 return casep->caseMatches();
             }
-            // Stop at statement boundaries
+            // Early exit: not in case-matches if we hit statement boundary
             if (VN_IS(parentp, NodeStmt)) return false;
         }
         return false;
     }
 
     // Helper: check if node is inside an if-matches condition
+    // Returns false for TaggedExpr in regular assignments (not in if-matches)
     static bool isInIfMatchesCondition(AstNode* nodep) {
         // Walk up parent chain to find Matches node that's a child of If
         for (AstNode* parentp = nodep->backp(); parentp; parentp = parentp->backp()) {
@@ -4938,7 +4940,7 @@ class WidthVisitor final : public VNVisitor {
                     return ifp->condp() == matchesp;
                 }
             }
-            // Stop at statement boundaries
+            // Early exit: not in if-matches if we hit statement boundary
             if (VN_IS(parentp, NodeStmt)) return false;
         }
         return false;
@@ -5903,7 +5905,10 @@ class WidthVisitor final : public VNVisitor {
         for (AstNode* stmtp = nodep->thensp(); stmtp; stmtp = stmtp->nextp()) {
             if (AstBegin* const beginp = VN_CAST(stmtp, Begin)) return beginp;
         }
-        return nullptr;
+        // V3LinkParse always creates Begin block when pattern vars exist
+        // Caller checks patVarTypes.empty() before calling, so Begin must exist
+        UASSERT_OBJ(false, nodep, "If-matches with pattern vars must have Begin block");
+        return nullptr;  // Unreachable but required for return type
     }
 
     // Helper: apply types to placeholder vars -- O(V * log M), 2 args
