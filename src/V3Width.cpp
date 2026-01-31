@@ -5091,7 +5091,8 @@ class WidthVisitor final : public VNVisitor {
         }
         // Validate pattern is TaggedPattern or TaggedExpr (V3Tagged relies on this)
         if (nodep->patternp()) {
-            if (!VN_IS(nodep->patternp(), TaggedPattern) && !VN_IS(nodep->patternp(), TaggedExpr)) {
+            if (!VN_IS(nodep->patternp(), TaggedPattern)
+                && !VN_IS(nodep->patternp(), TaggedExpr)) {
                 nodep->v3error("Expected tagged pattern in matches expression");
                 nodep->dtypeSetBit();
                 return;
