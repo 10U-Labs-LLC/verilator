@@ -265,10 +265,9 @@ class TaggedVisitor final : public VNVisitor {
         AstUnionDType* unionp = nullptr;
         // Pattern can be TaggedPattern (normal case) or TaggedExpr (edge cases)
         if (VN_IS(patternp, TaggedPattern) | VN_IS(patternp, TaggedExpr)) {
-            // V3Width ensures dtypep() is set; use & to avoid short-circuit
-            if (patternp->dtypep()) {
-                unionp = VN_CAST(patternp->dtypep()->skipRefp(), UnionDType);
-            }
+            // V3Width ensures dtypep() is set on all typed nodes
+            UASSERT_OBJ(patternp->dtypep(), matchesp, "V3Width ensures dtypep is set");
+            unionp = VN_CAST(patternp->dtypep()->skipRefp(), UnionDType);
         }
         return unionp;
     }
@@ -637,10 +636,9 @@ class TaggedVisitor final : public VNVisitor {
                 ++m_statTaggedExprs;
                 return;
             }
-            // If not in simple assignment context, this is more complex
-            // For now, emit an error for unsupported contexts
-            nodep->v3warn(E_UNSUPPORTED, "Tagged expression in non-simple assignment context");
-            return;
+            // V3Width catches all non-assignment contexts with "Tagged expression requires a context type"
+            // If we reach here, it's an internal error
+            UASSERT_OBJ(false, nodep, "V3Width catches non-assignment contexts");
         }
 
         // Transform tagged union expression (packed unions - use bit operations)
