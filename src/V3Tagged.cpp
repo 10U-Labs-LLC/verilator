@@ -470,8 +470,9 @@ class TaggedVisitor final : public VNVisitor {
                                           AstNode* condp, AstNode*& varDeclsp) {
         AstTaggedPattern* const tagPatternp = VN_CAST(condp, TaggedPattern);
         AstTaggedExpr* const tagExprCondp = VN_CAST(condp, TaggedExpr);
-        // Use & instead of && to avoid short-circuit branch
-        if ((!tagPatternp) & (!tagExprCondp)) return nullptr;
+        // V3Width validates conditions are TaggedPattern or TaggedExpr
+        UASSERT_OBJ(tagPatternp || tagExprCondp, condp,
+                    "V3Width validates case-matches conditions are tagged patterns");
 
         // V3Width validates member exists; one of tagPatternp/tagExprCondp is always set here
         const string& memberName = tagPatternp ? tagPatternp->name() : tagExprCondp->name();
@@ -545,8 +546,7 @@ class TaggedVisitor final : public VNVisitor {
             for (AstNode* condp = itemp->condsp(); condp; condp = condp->nextp()) {
                 AstCaseItem* const newItemp
                     = processCaseTaggedPattern(caseCtx, itemp, condp, varDeclsp);
-                // processCaseTaggedPattern returns non-null for valid tagged patterns
-                UASSERT(newItemp, "Expected valid tagged pattern in case-matches");
+                // V3Width validates patterns; processCaseTaggedPattern always returns non-null
                 addToNodeList(newCaseItemsp, newItemp);
             }
         }
@@ -629,9 +629,9 @@ class TaggedVisitor final : public VNVisitor {
                 ++m_statTaggedExprs;
                 return;
             }
-            // V3Width catches all non-assignment contexts with "Tagged expression requires a context type"
-            // If we reach here, it's an internal error
-            UASSERT_OBJ(false, nodep, "V3Width catches non-assignment contexts");
+            // Not a simple assignment - unsupported for unpacked unions
+            nodep->v3warn(E_UNSUPPORTED, "Tagged expression in non-simple assignment context");
+            return;
         }
 
         // Transform tagged union expression (packed unions - use bit operations)

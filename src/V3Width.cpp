@@ -5988,11 +5988,18 @@ class WidthVisitor final : public VNVisitor {
                                                << unionp->prettyDTypeNameQ() << suggest);
     }
     // Helper: visit one case-matches item's conditions (single loop)
-    void visitCaseMatchesItemConditions(AstCaseItem* itemp, AstNodeDType* exprDtp) {
+    // Returns false if any condition fails validation (V3Tagged relies on this)
+    bool visitCaseMatchesItemConditions(AstCaseItem* itemp, AstNodeDType* exprDtp) {
         for (AstNode *nextcp, *condp = itemp->condsp(); condp; condp = nextcp) {
             nextcp = condp->nextp();
+            // Validate condition is TaggedPattern or TaggedExpr (V3Tagged relies on this)
+            if (!VN_IS(condp, TaggedPattern) && !VN_IS(condp, TaggedExpr)) {
+                condp->v3error("Expected tagged pattern in case matches item");
+                return false;
+            }
             VL_DO_DANGLING(userIterate(condp, WidthVP{exprDtp, PRELIM}.p()), condp);
         }
+        return true;
     }
     // Helper: visit one normal case item's conditions (single loop)
     void visitCaseItemConditions(AstCaseItem* itemp) {
@@ -6021,7 +6028,7 @@ class WidthVisitor final : public VNVisitor {
             if (nodep->caseMatches()) {
                 // For case-matches: visit conditions first (with union dtype context),
                 // then update placeholder vars, then visit body
-                visitCaseMatchesItemConditions(itemp, exprDtp);
+                if (!visitCaseMatchesItemConditions(itemp, exprDtp)) return;
                 updateCaseMatchesPlaceholderVars(itemp);
                 userIterateAndNext(itemp->stmtsp(), nullptr);
             } else {
