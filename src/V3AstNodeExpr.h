@@ -56,7 +56,13 @@ public:
     bool hasDType() const override VL_MT_SAFE { return true; }
     virtual string emitVerilog() = 0;  /// Format string for verilog writing; see V3EmitV
     // For documentation on emitC format see EmitCFunc::emitOpName
-    virtual string emitC() = 0;
+    // Non-pure-virtual with default error: some subclasses (e.g., AstMatches, AstTaggedExpr)
+    // are transformed away before V3EmitC, so their emitC() is never called. This default
+    // allows those classes to omit the override, eliminating unreachable code. Excluded from
+    // coverage because it's never executed - exists only as a safety net for unexpected calls.
+    // LCOV_EXCL_START
+    virtual string emitC() { V3ERROR_NA_RETURN(""); }
+    // LCOV_EXCL_STOP
     virtual string emitSMT() const { return ""; };
     virtual string emitSimpleOperator() { return ""; }  // "" means not ok to use
     virtual bool emitCheckMaxWords() { return false; }  // Check VL_MULS_MAX_WORDS
@@ -1730,7 +1736,6 @@ public:
     }
     ASTGEN_MEMBERS_AstMatches;
     string emitVerilog() override { return guardp() ? "%l matches %r &&& %3" : "%l matches %r"; }
-    string emitC() override { V3ERROR_NA_RETURN(""); }
     bool cleanOut() const override { return false; }
     bool sameNode(const AstNode* /*samep*/) const override { return true; }
     bool hasGuard() const { return guardp() != nullptr; }
@@ -1935,7 +1940,6 @@ public:
         : ASTGEN_SUPER_PatternStar(fl) {}
     ASTGEN_MEMBERS_AstPatternStar;
     string emitVerilog() override { return ".*"; }
-    string emitC() override { V3ERROR_NA_RETURN(""); }
     bool cleanOut() const override { return false; }
     bool sameNode(const AstNode* /*samep*/) const override { return true; }
 };
@@ -1948,7 +1952,6 @@ public:
         , m_name{name} {}
     ASTGEN_MEMBERS_AstPatternVar;
     string emitVerilog() override { return ".%k"; }
-    string emitC() override { V3ERROR_NA_RETURN(""); }
     bool cleanOut() const override { return false; }
     bool sameNode(const AstNode* samep) const override {
         return m_name == VN_DBG_AS(samep, PatternVar)->m_name;
@@ -2434,7 +2437,6 @@ public:
     }
     ASTGEN_MEMBERS_AstTaggedExpr;
     string emitVerilog() override { return "tagged %k"; }
-    string emitC() override { V3ERROR_NA_RETURN(""); }
     bool cleanOut() const override { return false; }
     bool sameNode(const AstNode* samep) const override {
         return m_name == VN_DBG_AS(samep, TaggedExpr)->m_name;
@@ -2453,7 +2455,6 @@ public:
     }
     ASTGEN_MEMBERS_AstTaggedPattern;
     string emitVerilog() override { return "tagged %k"; }
-    string emitC() override { V3ERROR_NA_RETURN(""); }
     bool cleanOut() const override { return false; }
     bool sameNode(const AstNode* samep) const override {
         return m_name == VN_DBG_AS(samep, TaggedPattern)->m_name;
