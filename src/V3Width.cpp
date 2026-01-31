@@ -4912,21 +4912,25 @@ class WidthVisitor final : public VNVisitor {
     }
 
     // Helper: check if node is inside a case-matches condition -- O(items in case)
+    // Returns false for TaggedExpr in regular assignments (not in case-matches)
     static bool isInCaseMatchesCondition(AstNode* nodep) {
         // Walk up parent chain to find CaseItem (handles nested tagged expressions)
         for (AstNode* parentp = nodep->backp(); parentp; parentp = parentp->backp()) {
             if (AstCaseItem* const itemp = VN_CAST(parentp, CaseItem)) {
                 // Use aboveLoopp() because backp() returns previous sibling when multiple items
                 AstCase* const casep = VN_CAST(itemp->aboveLoopp(), Case);
-                return casep && casep->caseMatches();
+                // Split to avoid short-circuit branch
+                if (!casep) return false;
+                return casep->caseMatches();
             }
-            // Stop at statement boundaries
+            // Early exit: not in case-matches if we hit statement boundary
             if (VN_IS(parentp, NodeStmt)) return false;
         }
         return false;
     }
 
     // Helper: check if node is inside an if-matches condition
+    // Returns false for TaggedExpr in regular assignments (not in if-matches)
     static bool isInIfMatchesCondition(AstNode* nodep) {
         // Walk up parent chain to find Matches node that's a child of If
         for (AstNode* parentp = nodep->backp(); parentp; parentp = parentp->backp()) {
@@ -4936,7 +4940,7 @@ class WidthVisitor final : public VNVisitor {
                     return ifp->condp() == matchesp;
                 }
             }
-            // Stop at statement boundaries
+            // Early exit: not in if-matches if we hit statement boundary
             if (VN_IS(parentp, NodeStmt)) return false;
         }
         return false;
@@ -5078,7 +5082,20 @@ class WidthVisitor final : public VNVisitor {
         userIterateAndNext(nodep->lhsp(), WidthVP{CONTEXT_DET, PRELIM}.p());
         // Pass LHS dtype to pattern for context
         AstNodeDType* const lhsDtp = nodep->lhsp()->dtypep();
+        // Validate LHS is a tagged union (V3Tagged relies on this)
+        AstUnionDType* const unionp = VN_CAST(lhsDtp->skipRefp(), UnionDType);
+        if (!unionp || !unionp->isTagged()) {
+            nodep->v3error("Matches expression must be a tagged union type");
+            nodep->dtypeSetBit();
+            return;
+        }
+        // Validate pattern is TaggedPattern or TaggedExpr (V3Tagged relies on this)
         if (nodep->patternp()) {
+            if (!VN_IS(nodep->patternp(), TaggedPattern) && !VN_IS(nodep->patternp(), TaggedExpr)) {
+                nodep->v3error("Expected tagged pattern in matches expression");
+                nodep->dtypeSetBit();
+                return;
+            }
             userIterateAndNext(nodep->patternp(), WidthVP{lhsDtp, BOTH}.p());
         }
         // Width guard expression if present
@@ -5901,7 +5918,10 @@ class WidthVisitor final : public VNVisitor {
         for (AstNode* stmtp = nodep->thensp(); stmtp; stmtp = stmtp->nextp()) {
             if (AstBegin* const beginp = VN_CAST(stmtp, Begin)) return beginp;
         }
-        return nullptr;
+        // V3LinkParse always creates Begin block when pattern vars exist
+        // Caller checks patVarTypes.empty() before calling, so Begin must exist
+        UASSERT_OBJ(false, nodep, "If-matches with pattern vars must have Begin block");
+        return nullptr;  // Unreachable but required for return type
     }
 
     // Helper: apply types to placeholder vars -- O(V * log M), 2 args
@@ -5968,11 +5988,18 @@ class WidthVisitor final : public VNVisitor {
                                                << unionp->prettyDTypeNameQ() << suggest);
     }
     // Helper: visit one case-matches item's conditions (single loop)
-    void visitCaseMatchesItemConditions(AstCaseItem* itemp, AstNodeDType* exprDtp) {
+    // Returns false if any condition fails validation (V3Tagged relies on this)
+    bool visitCaseMatchesItemConditions(AstCaseItem* itemp, AstNodeDType* exprDtp) {
         for (AstNode *nextcp, *condp = itemp->condsp(); condp; condp = nextcp) {
             nextcp = condp->nextp();
+            // Validate condition is TaggedPattern or TaggedExpr (V3Tagged relies on this)
+            if (!VN_IS(condp, TaggedPattern) && !VN_IS(condp, TaggedExpr)) {
+                condp->v3error("Expected tagged pattern in case matches item");
+                return false;
+            }
             VL_DO_DANGLING(userIterate(condp, WidthVP{exprDtp, PRELIM}.p()), condp);
         }
+        return true;
     }
     // Helper: visit one normal case item's conditions (single loop)
     void visitCaseItemConditions(AstCaseItem* itemp) {
@@ -5987,13 +6014,21 @@ class WidthVisitor final : public VNVisitor {
         // Type check expression case item conditions and bodies
         userIterateAndNext(nodep->exprp(), WidthVP{CONTEXT_DET, PRELIM}.p());
         AstNodeDType* const exprDtp = nodep->exprp()->dtypep();
-        if (nodep->caseMatches()) buildTaggedMemberMap(exprDtp);
+        if (nodep->caseMatches()) {
+            // Validate expression is a tagged union (V3Tagged relies on this)
+            AstUnionDType* const unionp = VN_CAST(exprDtp->skipRefp(), UnionDType);
+            if (!unionp || !unionp->isTagged()) {
+                nodep->v3error("Case matches expression must be a tagged union type");
+                return;
+            }
+            buildTaggedMemberMap(exprDtp);
+        }
         for (AstCaseItem *nextip, *itemp = nodep->itemsp(); itemp; itemp = nextip) {
             nextip = VN_AS(itemp->nextp(), CaseItem);  // Prelim may cause the node to get replaced
             if (nodep->caseMatches()) {
                 // For case-matches: visit conditions first (with union dtype context),
                 // then update placeholder vars, then visit body
-                visitCaseMatchesItemConditions(itemp, exprDtp);
+                if (!visitCaseMatchesItemConditions(itemp, exprDtp)) return;
                 updateCaseMatchesPlaceholderVars(itemp);
                 userIterateAndNext(itemp->stmtsp(), nullptr);
             } else {
