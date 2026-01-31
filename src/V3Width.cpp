@@ -5082,7 +5082,20 @@ class WidthVisitor final : public VNVisitor {
         userIterateAndNext(nodep->lhsp(), WidthVP{CONTEXT_DET, PRELIM}.p());
         // Pass LHS dtype to pattern for context
         AstNodeDType* const lhsDtp = nodep->lhsp()->dtypep();
+        // Validate LHS is a tagged union (V3Tagged relies on this)
+        AstUnionDType* const unionp = VN_CAST(lhsDtp->skipRefp(), UnionDType);
+        if (!unionp || !unionp->isTagged()) {
+            nodep->v3error("Matches expression must be a tagged union type");
+            nodep->dtypeSetBit();
+            return;
+        }
+        // Validate pattern is TaggedPattern or TaggedExpr (V3Tagged relies on this)
         if (nodep->patternp()) {
+            if (!VN_IS(nodep->patternp(), TaggedPattern) && !VN_IS(nodep->patternp(), TaggedExpr)) {
+                nodep->v3error("Expected tagged pattern in matches expression");
+                nodep->dtypeSetBit();
+                return;
+            }
             userIterateAndNext(nodep->patternp(), WidthVP{lhsDtp, BOTH}.p());
         }
         // Width guard expression if present
@@ -5994,7 +6007,15 @@ class WidthVisitor final : public VNVisitor {
         // Type check expression case item conditions and bodies
         userIterateAndNext(nodep->exprp(), WidthVP{CONTEXT_DET, PRELIM}.p());
         AstNodeDType* const exprDtp = nodep->exprp()->dtypep();
-        if (nodep->caseMatches()) buildTaggedMemberMap(exprDtp);
+        if (nodep->caseMatches()) {
+            // Validate expression is a tagged union (V3Tagged relies on this)
+            AstUnionDType* const unionp = VN_CAST(exprDtp->skipRefp(), UnionDType);
+            if (!unionp || !unionp->isTagged()) {
+                nodep->v3error("Case matches expression must be a tagged union type");
+                return;
+            }
+            buildTaggedMemberMap(exprDtp);
+        }
         for (AstCaseItem *nextip, *itemp = nodep->itemsp(); itemp; itemp = nextip) {
             nextip = VN_AS(itemp->nextp(), CaseItem);  // Prelim may cause the node to get replaced
             if (nodep->caseMatches()) {

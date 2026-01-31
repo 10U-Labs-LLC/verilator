@@ -393,20 +393,16 @@ class TaggedVisitor final : public VNVisitor {
         FileLine* const fl = matchesp->fileline();
         AstNodeExpr* const exprp = matchesp->lhsp();
 
-        // Get the pattern (check pattern type first for better error messages)
+        // Get the pattern - V3Width validates pattern is TaggedPattern or TaggedExpr
         AstTaggedPattern* const tagPatternp = VN_CAST(matchesp->patternp(), TaggedPattern);
         AstTaggedExpr* const tagExprp = VN_CAST(matchesp->patternp(), TaggedExpr);
-        if (!tagPatternp && !tagExprp) {
-            matchesp->v3error("Expected tagged pattern in matches expression");
-            return;
-        }
+        UASSERT_OBJ(tagPatternp || tagExprp, matchesp,
+                    "V3Width ensures pattern is TaggedPattern/Expr");
 
-        // Get and validate union type
+        // Get union type - V3Width validates LHS is a tagged union
         AstUnionDType* const unionp = getMatchesUnionType(matchesp);
-        if (!unionp || !unionp->isTagged()) {
-            matchesp->v3error("Matches expression must be a tagged union type");
-            return;
-        }
+        UASSERT_OBJ(unionp && unionp->isTagged(), matchesp,
+                    "V3Width ensures tagged union type");
 
         // Lookup member (V3Width validates member exists)
         const string& memberName = tagPatternp ? tagPatternp->name() : tagExprp->name();
@@ -518,12 +514,9 @@ class TaggedVisitor final : public VNVisitor {
     // Transform case matches statements
     void transformCaseMatches(AstCase* casep) {
         FileLine* const fl = casep->fileline();
+        // V3Width validates expression is a tagged union
         AstUnionDType* const unionp = VN_CAST(casep->exprp()->dtypep()->skipRefp(), UnionDType);
-
-        if (!unionp || !unionp->isTagged()) {
-            casep->v3error("Case matches expression must be a tagged union type");
-            return;
-        }
+        UASSERT_OBJ(unionp && unionp->isTagged(), casep, "V3Width ensures tagged union type");
 
         const bool isUnpacked = !unionp->packed();
         AstVar* const tempVarp = createCaseTempVar(fl, unionp, isUnpacked);
